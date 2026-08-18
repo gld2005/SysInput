@@ -1,125 +1,163 @@
 # SysInput
 
-**SysInput** is a lightweight Windows utility written in [Zig](https://ziglang.org/download/). It provides English autocomplete, next-word prediction, phrase completion, abbreviations, and local personalization across Windows applications.
+**SysInput** is a lightweight, local-only English input assistant for Windows, written in [Zig](https://ziglang.org/). It provides system-wide word completion, next-word and phrase prediction, abbreviation expansion, corpus-assisted suggestions, and bounded personalization.
 
-> **Release status:** `v0.2.0-rc.1`. This branch is a substantial, privacy-focused upgrade of [PeterM45/SysInput](https://github.com/PeterM45/SysInput). The original copyright and MIT license are preserved in [LICENSE](LICENSE); attribution details are in [NOTICE.md](NOTICE.md).
+> **Current release:** [`v0.2.0-rc.1`](https://github.com/gld2005/SysInput/releases/tag/v0.2.0-rc.1) on the `gld2005` branch. This is a release candidate and a substantial upgrade of [PeterM45/SysInput](https://github.com/PeterM45/SysInput), not an official upstream release. The original copyright and MIT license are preserved in [LICENSE](LICENSE); full attribution is in [NOTICE.md](NOTICE.md).
 
-## Demo
+## Download v0.2.0-rc.1
 
-![SysInput Demo](https://github.com/user-attachments/assets/95c258c5-f25d-4a10-8337-2f7532c056e5)
+- [Download the Windows installer](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.1/SysInput-Setup-0.2.0-rc1.exe)
+- [Download the SHA-256 checksum file](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.1/SysInput-Setup-0.2.0-rc1.exe.sha256)
+- [Open the GitHub Release page](https://github.com/gld2005/SysInput/releases/tag/v0.2.0-rc.1)
 
-## Features
+Installer SHA-256:
 
-- **English-layout gating:** Prediction and learning stop when a non-English keyboard layout is active.
-- **System-wide suggestions:** Compact Windows-style candidates near the active caret.
-- **Progressive acceptance:** `Tab` accepts the next phrase chunk; `Ctrl+Right` accepts one word.
-- **Local personalization:** Bounded word, context, phrase, and repeated-sentence learning.
-- **Abbreviations and corpus import:** User-managed expansions plus local `.txt` and `.md` corpus indexes.
-- **Runtime control:** Native tray menu, compact settings, temporary pause, startup choice, and application exclusions.
-- **Privacy and efficiency:** No cloud model, telemetry, or grammar correction; idle CPU remains near zero.
+```text
+967aa686ba749473de72b64aa3e5ec5ad24196eb42126baa8c0bfee58b850d44
+```
+
+Verify it in PowerShell:
+
+```powershell
+(Get-FileHash .\SysInput-Setup-0.2.0-rc1.exe -Algorithm SHA256).Hash
+```
+
+The RC installer is not Authenticode-signed, so Windows may display an **Unknown publisher** warning. Verify the checksum before installation.
+
+## What this version is for
+
+SysInput is an input-assistance utility, not a grammar checker or language-learning tool. Its goal is to reduce English typing effort while remaining fast, private, and unobtrusive.
+
+- Suggestions appear automatically near the active text caret.
+- `Tab` accepts the next word or phrase chunk instead of inserting an entire sentence unexpectedly.
+- `Ctrl+Right` accepts only one predicted word.
+- Ordinary arrow keys remain available to the current application.
+- Prediction and learning stop when a non-English keyboard layout is active.
+- All prediction, learning, abbreviations, and imported corpus indexes stay on the local computer.
+- No cloud model, account, synchronization, telemetry, or grammar correction is included.
+
+## Main features
+
+- **System-wide English suggestions:** Word completion across supported Windows text fields.
+- **Context prediction:** Bounded next-word, phrase, and repeated-sentence continuation.
+- **Progressive acceptance:** Accept one word or one phrase chunk at a time.
+- **Personalization:** Deterministic local ranking based on typed and accepted suggestions.
+- **Abbreviation expansion:** User-managed triggers and expansions.
+- **Corpus-assisted prediction:** Import local UTF-8 `.txt` and `.md` material for phrase and sentence indexing.
+- **English-layout gating:** Non-English layouts immediately disable prediction and learning.
+- **Application exclusions:** Disable SysInput in selected programs.
+- **Protected-input safeguards:** Password fields and unsupported protected targets fail closed.
+- **Native Windows controls:** Tray menu, temporary pause, startup choice, compact settings, themes, accents, and density options.
+- **Lightweight runtime:** Pure Zig and Win32 with no Electron, WebView, Qt, or third-party runtime.
 
 ## Installation
 
-### Prerequisites
+### Recommended: Windows installer
 
-- Windows 10 or 11
-- [Zig 0.14.0](https://ziglang.org/download/) for source builds
+1. Download [`SysInput-Setup-0.2.0-rc1.exe`](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.1/SysInput-Setup-0.2.0-rc1.exe).
+2. Verify its SHA-256 checksum using the value above or the accompanying [checksum file](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.1/SysInput-Setup-0.2.0-rc1.exe.sha256).
+3. Run the installer and choose whether SysInput should start with Windows.
+4. After launch, use the tray icon to open Settings, pause predictions, exclude an application, or exit.
 
-### Building from Source
+The installer is per-user and does not require administrator privileges. User settings and learned data are preserved by default during uninstall. Selecting the data-removal option deletes SysInput-owned settings and indexes but never deletes the user's original corpus files.
 
-```bash
-git clone https://github.com/PeterM45/SysInput.git
+### Build from source
+
+Requirements:
+
+- Windows 10 or Windows 11
+- [Zig 0.14.0](https://ziglang.org/download/)
+- Inno Setup 6 only when building the installer
+
+```powershell
+git clone --branch gld2005 https://github.com/gld2005/SysInput.git
 cd SysInput
-zig build
-zig build run
+zig build -Doptimize=ReleaseFast
+zig build test -Doptimize=ReleaseFast
 ```
 
-### Windows installer
-
-Release builds use Inno Setup 6 and install per-user without administrator privileges:
+Build the Windows installer:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\build_release.ps1
 ```
 
-The RC installer and SHA-256 checksum are written to `dist`. Standard Inno Setup options such as `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` are supported. User settings and learned data are preserved by default when uninstalling; automated removals may explicitly add `/DELETEUSERDATA` to remove SysInput-owned local data.
-
-The application runs in the background. Type in any text field and press **Tab** to see suggestions.
-
-For the complete release scope, migration behavior, validation results, and known release gates, see [CHANGELOG.md](CHANGELOG.md) and [docs/PHASE14_INSTALL_AND_RELEASE.md](docs/PHASE14_INSTALL_AND_RELEASE.md).
+Release artifacts are written to `dist`.
 
 ## Usage
 
-1. Start typing in any text field (at least 2 characters).
-2. Suggestions appear near your cursor.
-3. Press **Tab** to accept the selected word or phrase chunk.
-4. Use **Alt+Up/Down** to navigate suggestions without changing text.
+1. Start SysInput and switch to an English keyboard layout.
+2. Type normally in a supported text field.
+3. Suggestions appear near the caret without changing existing text.
+4. Accept only when the suggestion is useful.
 
-### Keyboard Shortcuts
+| Key | Action |
+| --- | --- |
+| `Tab` | Accept the current word or next phrase chunk |
+| `Ctrl+Right Arrow` | Accept one predicted word |
+| `Alt+Down Arrow` | Select the next suggestion |
+| `Alt+Up Arrow` | Select the previous suggestion |
+| Arrow keys | Normal application cursor movement |
+| `Enter` | Normal application input |
+| `Esc` | Hide suggestions |
 
-| Key         | Action              |
-| ----------- | ------------------- |
-| **Tab**              | Accept current word or chunk |
-| **Ctrl+Right Arrow** | Accept one predicted word    |
-| **Alt+Down Arrow**   | Next suggestion              |
-| **Alt+Up Arrow**     | Previous suggestion          |
-| **Arrow keys**       | Normal application movement  |
-| **Enter**            | Normal application input     |
-| **Esc**              | Hide suggestions             |
+## Runtime data and privacy
 
-## Architecture
+Installed mode stores SysInput-owned data under `%LOCALAPPDATA%\SysInput`. Portable mode stores it in a `data` directory beside the executable.
 
-- **Core:** Text state, settings, data paths, exclusions, and diagnostics.
-- **Input:** Lightweight keyboard event capture, layout gating, and text-field detection.
-- **Suggestion:** Background worker, structured candidates, leases, ranking, and feedback.
-- **Text:** Dictionary, personal profile, context, sentence, abbreviation, and corpus indexes.
-- **UI:** Candidate overlay, placement, appearance, settings, abbreviation, and corpus windows.
-- **Platform:** Win32 API bindings, protected-target guard, lifecycle, insertion, and text injection.
+The data is separated into personal learning, imported-corpus indexes, abbreviations, exclusions, and settings. SysInput does not upload user input, corpus content, abbreviation content, diagnostics, or performance data.
 
-## Project Structure
+## Release-candidate validation
 
-```
+For `v0.2.0-rc.1`:
+
+- 47 automated characterization and regression checks pass in `ReleaseFast`.
+- Repeatable Hook and candidate benchmarks remain below the project targets of 1 ms P95 and 20 ms P95 respectively.
+- Observed idle working set is approximately 14.5 MiB.
+- The published installer was downloaded again from GitHub and its SHA-256 was verified.
+- Silent install, installed-program startup, normal `--shutdown`, shortcut behavior, startup opt-out, and uninstall were successfully exercised.
+
+Before a stable `v0.2.0`, final interactive acceptance is still required across the complete application and system matrix listed in [CHANGELOG.md](CHANGELOG.md).
+
+## Project structure
+
+```text
 SysInput/
-├── .github/              - CI and pull-request template
-├── docs/                 - Phase design and validation records
-├── installer/            - Inno Setup release definition
-├── resources/            - Dictionary, icon, and Win32 resources
+├── .github/              CI and pull-request templates
+├── docs/                 Design and validation records
+├── installer/            Inno Setup release definition
+├── resources/            Dictionary, icon, and Win32 resources
 ├── src/
-│   ├── core/             - Settings, profiles, buffer, and exclusions
-│   ├── input/            - Hook-facing event decoding and language gate
-│   ├── platform/windows/ - Win32 lifecycle, safety guard, and insertion
-│   ├── suggestion/       - Worker, candidate model, leases, and manager
-│   ├── text/             - Prediction and local-learning indexes
-│   └── ui/               - Candidate, settings, abbreviation, and corpus UI
-├── tools/                - Reproducible icon and release scripts
+│   ├── core/             Settings, profiles, buffer, and exclusions
+│   ├── input/            Event decoding and language gating
+│   ├── platform/windows/ Win32 lifecycle, safeguards, and insertion
+│   ├── suggestion/       Worker, candidates, leases, and ranking
+│   ├── text/             Prediction and local indexes
+│   └── ui/               Candidate and management windows
+├── tools/                Icon and release scripts
 ├── build.zig
 └── build.zig.zon
 ```
 
+## Documentation
+
+- [Release history and known gates](CHANGELOG.md)
+- [Installation and release validation](docs/PHASE14_INSTALL_AND_RELEASE.md)
+- [Abbreviation management](docs/PHASE12_ABBREVIATIONS.md)
+- [Corpus import and prediction](docs/PHASE13_CORPUS.md)
+- [Contribution guide](CONTRIBUTING.md)
+
 ## Contributing
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request. Changes must preserve the lightweight Hook boundary, local-only privacy model, original MIT attribution, and relevant regression tests.
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first. Changes should preserve the lightweight keyboard-Hook boundary, local-only privacy model, original MIT attribution, and relevant regression tests.
 
-## Troubleshooting
+## License and attribution
 
-Stage 12 abbreviation setup and verification are described in
-[docs/PHASE12_ABBREVIATIONS.md](docs/PHASE12_ABBREVIATIONS.md).
-Local corpus import and prediction are described in
-[docs/PHASE13_CORPUS.md](docs/PHASE13_CORPUS.md).
+This project is derived from [PeterM45/SysInput](https://github.com/PeterM45/SysInput) and remains licensed under the MIT License.
 
-**No suggestions?**
+- Original author: PeterM45
+- Original copyright: Copyright (c) 2025 PeterM45
+- License: [MIT](LICENSE)
+- Fork attribution and modification notice: [NOTICE.md](NOTICE.md)
 
-- Ensure SysInput is running.
-- Type in a standard text field (minimum 2 characters).
-
-**Text insertion issues?**
-
-- Try a different insertion method; some applications may have restrictions.
-
-## License
-
-This project is derived from [PeterM45/SysInput](https://github.com/PeterM45/SysInput) and remains licensed under the MIT License. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
-
----
-
-Feel free to tweak as needed. Happy coding! 👍
+The `gld2005` release is not presented as an official release of, or endorsement by, the original author.
