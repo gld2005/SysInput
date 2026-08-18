@@ -4,7 +4,7 @@
 
 Phase 14 produces the `v0.2.0-rc1` installer. It is an RC build, not the final stable release: interactive application compatibility and code signing remain explicit release gates.
 
-Artifacts are generated under `G:\SysInput\dist`:
+Artifacts are generated under the ignored `dist` directory:
 
 - `SysInput-Setup-0.2.0-rc1.exe`
 - `SysInput-Setup-0.2.0-rc1.exe.sha256`

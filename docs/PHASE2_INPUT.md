@@ -69,10 +69,9 @@ phases:
 Commands:
 
 ```powershell
-$env:ZIG_GLOBAL_CACHE_DIR = 'G:\SysInput\.zig-global-cache'
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build test
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build baseline -Doptimize=ReleaseFast
+zig build
+zig build test
+zig build baseline -Doptimize=ReleaseFast
 ```
 
 Characterization result:
@@ -98,8 +97,8 @@ handles=60
 ```
 
 The process installed its hook, remained alive for the sample, and was then
-terminated by exact process ID. Project tools, caches, builds, and reports
-remain under `G:\SysInput`.
+terminated by exact process ID. Build artifacts remain under the repository's
+ignored build and cache directories.
 
 ## Remaining input risks
 

@@ -77,9 +77,8 @@ These protections cannot be overridden by a normal feature checkbox.
 ## Verification
 
 ```powershell
-$env:ZIG_GLOBAL_CACHE_DIR = 'G:\SysInput\.zig-global-cache'
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build test -Doptimize=ReleaseSafe --global-cache-dir $env:ZIG_GLOBAL_CACHE_DIR
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build -Doptimize=ReleaseFast --global-cache-dir $env:ZIG_GLOBAL_CACHE_DIR
+zig build test -Doptimize=ReleaseSafe
+zig build -Doptimize=ReleaseFast
 .\zig-out\bin\SysInput.exe --background --portable --no-startup-write
 ```
 

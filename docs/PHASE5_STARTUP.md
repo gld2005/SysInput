@@ -23,14 +23,14 @@ rights:
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run
-SysInput="G:\SysInput\zig-out\bin\SysInput.exe" --background
+SysInput="C:\Path\To\SysInput.exe" --background
 ```
 
-The command always quotes the absolute executable path. On first normal use,
-startup is enabled and a small preference marker is stored under
-`HKCU\Software\SysInput`. If the user disables startup from the tray, later
-manual launches respect that choice. If an enabled portable executable moves,
-the Run command is refreshed to its current absolute path.
+The command always quotes the absolute executable path. A missing Run value is
+never created merely because SysInput launches. The installer exposes an
+explicit startup task, and the user can change the same preference from the
+tray or Settings. Upgrades preserve the existing selection and refresh an
+enabled installed-mode path when necessary.
 
 `--no-startup-write` is available for automated diagnostics so tests can run
 without changing the user's startup preference.

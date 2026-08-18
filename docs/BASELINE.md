@@ -8,22 +8,21 @@ this phase.
 
 - OS: Microsoft Windows NT 10.0.26200.0, 64-bit
 - Logical processors: 22
-- Zig: 0.14.0 portable toolchain under `G:\SysInput\.tools`
+- Zig: 0.14.0
 - Build mode used for measurements: `ReleaseFast`
 - Bundled dictionary entries loaded: 9,974
 
-The project-local Zig global cache is `G:\SysInput\.zig-global-cache`. This
-keeps project-generated tool, cache, test, and build data on the G drive.
+The original measurement used a project-local `.zig-global-cache`; the cache
+location is not part of the product contract.
 
 ## Repeatable commands
 
-Run these commands from `G:\SysInput` in PowerShell:
+Run these commands from the repository root in PowerShell:
 
 ```powershell
-$env:ZIG_GLOBAL_CACHE_DIR = 'G:\SysInput\.zig-global-cache'
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build test
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build baseline -Doptimize=ReleaseFast
+zig build
+zig build test
+zig build baseline -Doptimize=ReleaseFast
 ```
 
 `zig build test` is a characterization executable instead of Zig's default

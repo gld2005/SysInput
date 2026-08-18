@@ -2,23 +2,28 @@
 
 **SysInput** is a lightweight Windows utility written in [Zig](https://ziglang.org/download/). It provides English autocomplete, next-word prediction, phrase completion, abbreviations, and local personalization across Windows applications.
 
+> **Release status:** `v0.2.0-rc.1`. This branch is a substantial, privacy-focused upgrade of [PeterM45/SysInput](https://github.com/PeterM45/SysInput). The original copyright and MIT license are preserved in [LICENSE](LICENSE); attribution details are in [NOTICE.md](NOTICE.md).
+
 ## Demo
 
 ![SysInput Demo](https://github.com/user-attachments/assets/95c258c5-f25d-4a10-8337-2f7532c056e5)
 
 ## Features
 
-- **System-wide suggestions:** Works in any standard text field.
-- **Intelligent autocomplete:** Learns from your typing.
-- **Low resource usage:** Efficiently built in Zig ⚡
-- **Adaptive learning:** Learns local word, phrase, and sentence preferences without cloud upload
+- **English-layout gating:** Prediction and learning stop when a non-English keyboard layout is active.
+- **System-wide suggestions:** Compact Windows-style candidates near the active caret.
+- **Progressive acceptance:** `Tab` accepts the next phrase chunk; `Ctrl+Right` accepts one word.
+- **Local personalization:** Bounded word, context, phrase, and repeated-sentence learning.
+- **Abbreviations and corpus import:** User-managed expansions plus local `.txt` and `.md` corpus indexes.
+- **Runtime control:** Native tray menu, compact settings, temporary pause, startup choice, and application exclusions.
+- **Privacy and efficiency:** No cloud model, telemetry, or grammar correction; idle CPU remains near zero.
 
 ## Installation
 
 ### Prerequisites
 
 - Windows 10 or 11
-- [Zig 0.14.0](https://ziglang.org/download/) (or later)
+- [Zig 0.14.0](https://ziglang.org/download/) for source builds
 
 ### Building from Source
 
@@ -41,6 +46,8 @@ The RC installer and SHA-256 checksum are written to `dist`. Standard Inno Setup
 
 The application runs in the background. Type in any text field and press **Tab** to see suggestions.
 
+For the complete release scope, migration behavior, validation results, and known release gates, see [CHANGELOG.md](CHANGELOG.md) and [docs/PHASE14_INSTALL_AND_RELEASE.md](docs/PHASE14_INSTALL_AND_RELEASE.md).
+
 ## Usage
 
 1. Start typing in any text field (at least 2 characters).
@@ -62,60 +69,36 @@ The application runs in the background. Type in any text field and press **Tab**
 
 ## Architecture
 
-- **Core:** Text buffer, configuration, and debugging.
-- **Input:** Keyboard hooks and text field detection.
-- **Text:** Autocomplete engine, dictionary management, and spell checking.
-- **UI:** Suggestion overlay and window management.
-- **Win32:** Windows API bindings and hook implementations.
+- **Core:** Text state, settings, data paths, exclusions, and diagnostics.
+- **Input:** Lightweight keyboard event capture, layout gating, and text-field detection.
+- **Suggestion:** Background worker, structured candidates, leases, ranking, and feedback.
+- **Text:** Dictionary, personal profile, context, sentence, abbreviation, and corpus indexes.
+- **UI:** Candidate overlay, placement, appearance, settings, abbreviation, and corpus windows.
+- **Platform:** Win32 API bindings, protected-target guard, lifecycle, insertion, and text injection.
 
 ## Project Structure
 
 ```
 SysInput/
-├── build.zig             - Build configuration
-├── resources/
-│   └── dictionary.txt    - Word dictionary for suggestions
-└── src/
-    ├── buffer_controller.zig - Text buffer management
-    ├── core/               - Core functionality
-    │   ├── buffer.zig      - Text buffer implementation
-    │   ├── config.zig      - Configuration
-    │   └── debug.zig       - Debugging utilities
-    ├── input/             - Input handling
-    │   ├── keyboard.zig    - Keyboard hook and processing
-    │   ├── text_field.zig  - Text field detection
-    │   └── window_detection.zig  - Window detection
-    ├── main.zig           - Application entry point
-    ├── module_exports.zig    - Main module imports
-    ├── suggestion/        - Suggestion handling
-    │   ├── manager.zig     - Suggestion manager
-    │   └── stats.zig       - Statistics tracking
-    ├── text/              - Text processing
-    │   ├── autocomplete.zig - Autocomplete engine
-    │   ├── dictionary.zig   - Dictionary loading/management
-    │   ├── edit_distance.zig - Text similarity algorithms
-    │   ├── insertion.zig     - Text insertion methods
-    │   └── spellcheck.zig    - Spell checking
-    ├── ui/                - User interface
-    │   ├── position.zig    - UI positioning logic
-    │   ├── suggestion_ui.zig - Suggestion UI
-    │   └── window.zig      - Window management
-    └── win32/             - Windows API bindings
-        ├── api.zig         - Windows API definitions
-        ├── hook.zig        - Hook implementation
-        └── text_inject.zig - Text injection utilities
+├── .github/              - CI and pull-request template
+├── docs/                 - Phase design and validation records
+├── installer/            - Inno Setup release definition
+├── resources/            - Dictionary, icon, and Win32 resources
+├── src/
+│   ├── core/             - Settings, profiles, buffer, and exclusions
+│   ├── input/            - Hook-facing event decoding and language gate
+│   ├── platform/windows/ - Win32 lifecycle, safety guard, and insertion
+│   ├── suggestion/       - Worker, candidate model, leases, and manager
+│   ├── text/             - Prediction and local-learning indexes
+│   └── ui/               - Candidate, settings, abbreviation, and corpus UI
+├── tools/                - Reproducible icon and release scripts
+├── build.zig
+└── build.zig.zon
 ```
 
 ## Contributing
 
-Contributions are welcome! To get started:
-
-1. Fork the repository.
-2. Clone your fork.
-3. Create a branch for your changes.
-4. Submit a pull request.
-
-Check out our contribution guidelines for more details.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request. Changes must preserve the lightweight Hook boundary, local-only privacy model, original MIT attribution, and relevant regression tests.
 
 ## Troubleshooting
 
@@ -135,7 +118,7 @@ Local corpus import and prediction are described in
 
 ## License
 
-This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
+This project is derived from [PeterM45/SysInput](https://github.com/PeterM45/SysInput) and remains licensed under the MIT License. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
 
 ---
 

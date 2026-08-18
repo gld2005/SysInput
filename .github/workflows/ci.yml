@@ -2,7 +2,6 @@ name: SysInput CI
 
 on:
   push:
-    branches: [main, master]
   pull_request:
     branches: [main, master]
 
@@ -29,6 +28,9 @@ jobs:
 
       - name: Run tests
         run: zig build test
+
+      - name: ReleaseFast validation
+        run: zig build test -Doptimize=ReleaseFast
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

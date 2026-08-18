@@ -54,12 +54,11 @@ settings and installer phases can reuse the same resource.
 
 ## Verification
 
-Run all generated files and caches on the G drive:
+Run from the repository root:
 
 ```powershell
-$env:ZIG_GLOBAL_CACHE_DIR = 'G:\SysInput\.zig-global-cache'
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build test -Doptimize=ReleaseSafe --global-cache-dir $env:ZIG_GLOBAL_CACHE_DIR
-.\.tools\zig-windows-x86_64-0.14.0\zig.exe build -Doptimize=ReleaseFast --global-cache-dir $env:ZIG_GLOBAL_CACHE_DIR
+zig build test -Doptimize=ReleaseSafe
+zig build -Doptimize=ReleaseFast
 ```
 
 For a non-invasive manual run that does not write standard-mode data to C:

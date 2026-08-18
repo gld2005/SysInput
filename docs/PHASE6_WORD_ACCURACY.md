@@ -32,9 +32,10 @@ target window. Recomputing an unchanged buffer does not increase its count.
 
 ## Persistence and privacy
 
-The profile is stored beside the executable at `data/profile.bin`. With the
-normal project build this is under `G:\SysInput\zig-out\bin\data`, not the
-system drive.
+At the end of Phase 6 the profile was stored beside the executable at
+`data/profile.bin`. Phase 10 supersedes this layout: installed mode now uses
+`%LOCALAPPDATA%\SysInput\profiles`, while portable mode keeps `data\profiles`
+beside the executable.
 
 - Saves run on the prediction worker, never in the keyboard hook.
 - Dirty data is saved at most once per 60 seconds and once during shutdown.

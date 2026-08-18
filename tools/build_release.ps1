@@ -1,22 +1,33 @@
 param(
-    [string]$InnoCompiler = ""
+    [string]$InnoCompiler = "",
+    [string]$ZigCompiler = ""
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$zig = Join-Path $projectRoot ".tools\zig-windows-x86_64-0.14.0\zig.exe"
 $installerScript = Join-Path $projectRoot "installer\SysInput.iss"
 $distDirectory = Join-Path $projectRoot "dist"
 
-if (-not (Test-Path -LiteralPath $zig)) {
-    throw "Zig 0.14.0 was not found at $zig"
+if ([string]::IsNullOrWhiteSpace($ZigCompiler)) {
+    $pathZig = Get-Command zig.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
+    $zigCandidates = @(
+        (Join-Path $projectRoot ".tools\zig-windows-x86_64-0.14.0\zig.exe"),
+        $pathZig
+    )
+    $ZigCompiler = $zigCandidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+}
+
+if ([string]::IsNullOrWhiteSpace($ZigCompiler) -or -not (Test-Path -LiteralPath $ZigCompiler)) {
+    throw "Zig 0.14.0 was not found. Pass -ZigCompiler with the zig.exe path."
 }
 
 if ([string]::IsNullOrWhiteSpace($InnoCompiler)) {
+    $pathInno = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
     $candidates = @(
         (Join-Path $projectRoot ".tools\inno-setup\ISCC.exe"),
         "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-        "C:\Program Files\Inno Setup 6\ISCC.exe"
+        "C:\Program Files\Inno Setup 6\ISCC.exe",
+        $pathInno
     )
     $InnoCompiler = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
@@ -28,10 +39,10 @@ if ([string]::IsNullOrWhiteSpace($InnoCompiler) -or -not (Test-Path -LiteralPath
 $env:ZIG_GLOBAL_CACHE_DIR = Join-Path $projectRoot ".zig-global-cache"
 Push-Location $projectRoot
 try {
-    & $zig build test -Doptimize=ReleaseFast
+    & $ZigCompiler build test -Doptimize=ReleaseFast
     if ($LASTEXITCODE -ne 0) { throw "Automated tests failed." }
 
-    & $zig build -Doptimize=ReleaseFast
+    & $ZigCompiler build -Doptimize=ReleaseFast
     if ($LASTEXITCODE -ne 0) { throw "ReleaseFast build failed." }
 
     New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
