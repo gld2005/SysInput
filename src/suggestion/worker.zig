@@ -144,6 +144,7 @@ pub const PredictionResult = struct {
 const FeedbackItem = struct {
     feedback_kind: FeedbackKind = .accepted,
     candidate_kind: candidate_model.CandidateKind = .word_completion,
+    candidate_source: candidate_model.CandidateSource = .dictionary,
     text: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
     len: u16 = 0,
 
@@ -151,10 +152,12 @@ const FeedbackItem = struct {
         self: *FeedbackItem,
         feedback_kind: FeedbackKind,
         candidate_kind: candidate_model.CandidateKind,
+        candidate_source: candidate_model.CandidateSource,
         text: []const u8,
     ) void {
         self.feedback_kind = feedback_kind;
         self.candidate_kind = candidate_kind;
+        self.candidate_source = candidate_source;
         const len = @min(text.len, self.text.len);
         @memcpy(self.text[0..len], text[0..len]);
         self.len = @intCast(len);
@@ -167,7 +170,7 @@ const FeedbackItem = struct {
 
 pub const ComputeCallback = *const fn (*const PredictionRequest, *PredictionResult) anyerror!void;
 pub const DeliverCallback = *const fn (*const PredictionResult) void;
-pub const FeedbackCallback = *const fn (FeedbackKind, candidate_model.CandidateKind, []const u8) anyerror!void;
+pub const FeedbackCallback = *const fn (FeedbackKind, candidate_model.CandidateKind, candidate_model.CandidateSource, []const u8) anyerror!void;
 pub const MaintenanceCallback = *const fn (bool) anyerror!void;
 
 var mutex = std.Thread.Mutex{};
@@ -233,24 +236,25 @@ pub fn submitPrediction(text: []const u8, word: []const u8) u64 {
 }
 
 pub fn submitLearnedWord(word: []const u8) void {
-    submitCandidateFeedback(.accepted, .word_completion, word);
+    submitCandidateFeedback(.accepted, .word_completion, .dictionary, word);
 }
 
 pub fn submitShownWord(word: []const u8) void {
-    submitCandidateFeedback(.shown, .word_completion, word);
+    submitCandidateFeedback(.shown, .word_completion, .dictionary, word);
 }
 
-pub fn submitShownCandidate(candidate_kind: candidate_model.CandidateKind, text: []const u8) void {
-    submitCandidateFeedback(.shown, candidate_kind, text);
+pub fn submitShownCandidate(candidate_kind: candidate_model.CandidateKind, candidate_source: candidate_model.CandidateSource, text: []const u8) void {
+    submitCandidateFeedback(.shown, candidate_kind, candidate_source, text);
 }
 
-pub fn submitAcceptedCandidate(candidate_kind: candidate_model.CandidateKind, text: []const u8) void {
-    submitCandidateFeedback(.accepted, candidate_kind, text);
+pub fn submitAcceptedCandidate(candidate_kind: candidate_model.CandidateKind, candidate_source: candidate_model.CandidateSource, text: []const u8) void {
+    submitCandidateFeedback(.accepted, candidate_kind, candidate_source, text);
 }
 
 fn submitCandidateFeedback(
     feedback_kind: FeedbackKind,
     candidate_kind: candidate_model.CandidateKind,
+    candidate_source: candidate_model.CandidateSource,
     word: []const u8,
 ) void {
     if (word.len == 0) return;
@@ -262,7 +266,7 @@ fn submitCandidateFeedback(
         feedback_count -= 1;
     }
     const tail = (feedback_head + feedback_count) % feedback_queue.len;
-    feedback_queue[tail].set(feedback_kind, candidate_kind, word);
+    feedback_queue[tail].set(feedback_kind, candidate_kind, candidate_source, word);
     feedback_count += 1;
     condition.signal();
 }
@@ -327,7 +331,7 @@ fn workerMain() void {
         mutex.unlock();
 
         if (feedback) |item| {
-            feedback_callback(item.feedback_kind, item.candidate_kind, item.slice()) catch |err| {
+            feedback_callback(item.feedback_kind, item.candidate_kind, item.candidate_source, item.slice()) catch |err| {
                 std.debug.print("Prediction feedback task failed: {}\n", .{err});
             };
         }

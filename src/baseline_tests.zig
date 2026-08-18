@@ -24,6 +24,7 @@ const data_paths = sysinput.core.data_paths;
 const application_exclusions = sysinput.core.application_exclusions;
 const app_guard = sysinput.win32.app_guard;
 const abbreviation = sysinput.text.abbreviation;
+const corpus = sysinput.text.corpus;
 
 var worker_test_mutex = std.Thread.Mutex{};
 var worker_test_learned = false;
@@ -56,11 +57,12 @@ fn testWorkerDeliver(result: *const prediction_worker.PredictionResult) void {
 fn testWorkerLearn(
     kind: prediction_worker.FeedbackKind,
     candidate_kind: candidate_model.CandidateKind,
+    candidate_source: candidate_model.CandidateSource,
     word: []const u8,
 ) !void {
     worker_test_mutex.lock();
     defer worker_test_mutex.unlock();
-    worker_test_learned = kind == .accepted and candidate_kind == .word_completion and
+    worker_test_learned = kind == .accepted and candidate_kind == .word_completion and candidate_source == .dictionary and
         std.mem.eql(u8, word, "accepted");
 }
 
@@ -1004,6 +1006,128 @@ fn testAbbreviationCandidateAcceptance(_: std.mem.Allocator) !void {
     try expectEqualStrings("regards, Alex", candidate.remainingAfter(word));
 }
 
+fn testCorpusContextAndAmbiguity(allocator: std.mem.Allocator) !void {
+    var index = corpus.Index.init(allocator);
+    defer index.deinit();
+    var cancelled = std.atomic.Value(bool).init(false);
+    try index.ingest("please let me know. please let me know. we can ship today. we can ship tomorrow.", &cancelled);
+    try index.finish();
+    const phrase = index.predict("please let ", "", 0);
+    try expect(phrase.count == 1);
+    try expectEqualStrings("me know", phrase.items[0].slice());
+    try expect(phrase.items[0].kind == .phrase);
+    const ambiguous = index.predict("we can ", "", 0);
+    try expect(ambiguous.count == 1);
+    try expectEqualStrings("ship", ambiguous.items[0].slice());
+    try expect(ambiguous.items[0].kind == .next_word);
+    var samples: [128]u64 = undefined;
+    for (&samples) |*sample| {
+        const started = std.time.nanoTimestamp();
+        _ = index.predict("please let ", "", 0);
+        sample.* = @intCast(std.time.nanoTimestamp() - started);
+    }
+    std.sort.heap(u64, &samples, {}, std.sort.asc(u64));
+    const p95 = samples[121];
+    std.debug.print("Corpus query P95: {d:.3} ms\n", .{@as(f64, @floatFromInt(p95)) / std.time.ns_per_ms});
+    try expect(p95 < 20 * std.time.ns_per_ms);
+}
+
+fn testCorpusWordPrefix(allocator: std.mem.Allocator) !void {
+    var index = corpus.Index.init(allocator);
+    defer index.deinit();
+    var cancelled = std.atomic.Value(bool).init(false);
+    try index.ingest("configuration configuration confirm consideration", &cancelled);
+    try index.finish();
+    const predictions = index.predict("", "conf", 0);
+    try expect(predictions.count >= 2);
+    try expectEqualStrings("configuration", predictions.items[0].slice());
+}
+
+fn waitForCorpus(service: *corpus.Service) !void {
+    var attempts: usize = 0;
+    while (service.isBusy() and attempts < 500) : (attempts += 1) std.Thread.sleep(10 * std.time.ns_per_ms);
+    if (service.isBusy()) return error.BaselineTestFailed;
+}
+
+fn testCorpusImportPersistenceAndRemoval(allocator: std.mem.Allocator) !void {
+    const root = try phase10TempRoot(allocator, "corpus-service");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    try std.fs.cwd().makePath(root);
+    const source = try std.fs.path.join(allocator, &.{ root, "mail.md" });
+    defer allocator.free(source);
+    var file = try std.fs.cwd().createFile(source, .{ .truncate = true });
+    try file.writeAll("Thank you for your time. Thank you for your time.");
+    file.close();
+    const storage = try std.fs.path.join(allocator, &.{ root, "corpus" });
+    defer allocator.free(storage);
+
+    var first = try corpus.Service.initAt(allocator, storage);
+    try first.startImport(source, false);
+    try waitForCorpus(&first);
+    var metadata: [corpus.MAX_CORPORA]corpus.Metadata = undefined;
+    try expect(first.copyMetadata(&metadata) == 1 and metadata[0].status == .ready and metadata[0].file_count == 1);
+    try expectEqualStrings("your time", first.predict("thank you for ", "").items[0].slice());
+    for (0..10) |_| try first.recordFeedback(true, "your time");
+    try expect(first.predict("thank you for ", "").count == 0);
+    try first.recordFeedback(false, "your time");
+    try expect(first.predict("thank you for ", "").count == 1);
+    const id = metadata[0].id;
+    first.deinit();
+
+    var restored = try corpus.Service.initAt(allocator, storage);
+    defer restored.deinit();
+    try expectEqualStrings("your time", restored.predict("thank you for ", "").items[0].slice());
+    try restored.startToggle(id);
+    try waitForCorpus(&restored);
+    try expect(restored.predict("thank you for ", "").count == 0);
+    try restored.startToggle(id);
+    try waitForCorpus(&restored);
+    try expect(restored.predict("thank you for ", "").count == 1);
+    try restored.startRebuild(id);
+    restored.requestCancel();
+    try waitForCorpus(&restored);
+    try expect(restored.predict("thank you for ", "").count == 1);
+    try restored.startRemove(id);
+    try waitForCorpus(&restored);
+    try expect(restored.predict("thank you for ", "").count == 0);
+}
+
+fn testCorpusFolderImport(allocator: std.mem.Allocator) !void {
+    const root = try phase10TempRoot(allocator, "corpus-folder");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    const sources = try std.fs.path.join(allocator, &.{ root, "sources" });
+    defer allocator.free(sources);
+    try std.fs.cwd().makePath(sources);
+    for ([_][]const u8{ "one.txt", "two.md", "ignored.json" }) |name| {
+        const path = try std.fs.path.join(allocator, &.{ sources, name });
+        defer allocator.free(path);
+        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        try file.writeAll("feel free to reach out. feel free to reach out.");
+        file.close();
+    }
+    const storage = try std.fs.path.join(allocator, &.{ root, "index" });
+    defer allocator.free(storage);
+    var service = try corpus.Service.initAt(allocator, storage);
+    defer service.deinit();
+    try service.startImport(sources, true);
+    try waitForCorpus(&service);
+    var metadata: [corpus.MAX_CORPORA]corpus.Metadata = undefined;
+    try expect(service.copyMetadata(&metadata) == 1 and metadata[0].file_count == 2 and metadata[0].status == .ready);
+}
+
+fn testCorpusFeedbackPenalty(allocator: std.mem.Allocator) !void {
+    const root = try phase10TempRoot(allocator, "corpus-feedback");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    var service = try corpus.Service.initAt(allocator, root);
+    defer service.deinit();
+    try service.recordFeedback(true, "possible");
+    try service.recordFeedback(true, "possible");
+    try service.recordFeedback(false, "possible");
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -1042,6 +1166,11 @@ pub fn main() !void {
         .{ .name = "abbreviation persistence and corruption", .run = testAbbreviationPersistenceAndCorruption },
         .{ .name = "explicit abbreviation trigger", .run = testExplicitAbbreviationTrigger },
         .{ .name = "abbreviation candidate acceptance", .run = testAbbreviationCandidateAcceptance },
+        .{ .name = "corpus context and ambiguity", .run = testCorpusContextAndAmbiguity },
+        .{ .name = "corpus word prefix", .run = testCorpusWordPrefix },
+        .{ .name = "corpus import persistence and removal", .run = testCorpusImportPersistenceAndRemoval },
+        .{ .name = "corpus feedback penalty", .run = testCorpusFeedbackPenalty },
+        .{ .name = "corpus folder import", .run = testCorpusFolderImport },
     };
 
     try testWordCharacters();
@@ -1063,5 +1192,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 39/39 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 44/44 checks passed\n");
 }

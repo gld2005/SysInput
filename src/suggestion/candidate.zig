@@ -28,6 +28,7 @@ pub const CandidateSource = enum(u8) {
     learned_phrase,
     repeated_sentence,
     user_abbreviation,
+    user_corpus,
 };
 
 pub const ChunkKind = enum(u8) {

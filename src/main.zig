@@ -16,6 +16,7 @@ const application_exclusions = sysinput.core.application_exclusions;
 const app_guard = sysinput.win32.app_guard;
 const settings_window = sysinput.ui.settings_window;
 const abbreviation_window = sysinput.ui.abbreviation_window;
+const corpus_window = sysinput.ui.corpus_window;
 
 /// General Purpose Allocator for dynamic memory
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -117,11 +118,13 @@ pub fn main() !void {
     const hInstance = win32.GetModuleHandleA(null);
 
     // Initialize suggestion handler
-    try manager.init(allocator, hInstance, paths.profiles, paths.root, &runtime_store);
+    try manager.init(allocator, hInstance, paths.profiles, paths.root, paths.corpus, &runtime_store);
     defer manager.deinit();
 
     try abbreviation_window.init(hInstance, manager.abbreviations());
     defer abbreviation_window.deinit();
+    try corpus_window.init(hInstance, manager.corpora());
+    defer corpus_window.deinit();
 
     try settings_window.init(
         allocator,

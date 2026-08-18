@@ -23,6 +23,7 @@ const suggestion_window = sysinput.ui.window;
 const runtime_settings = sysinput.core.runtime_settings;
 const app_guard = sysinput.win32.app_guard;
 const abbreviation = sysinput.text.abbreviation;
+const corpus = sysinput.text.corpus;
 
 const CandidateTextStorage = struct {
     display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
@@ -71,6 +72,8 @@ var last_profile_save_ms: i64 = 0;
 var settings_store: *runtime_settings.Store = undefined;
 var abbreviation_store: abbreviation.Store = undefined;
 var abbreviation_initialized = false;
+var corpus_service: corpus.Service = undefined;
+var corpus_initialized = false;
 
 /// Global UI for autocompletion suggestions
 pub var autocomplete_ui_manager: suggestion_ui.AutocompleteUI = undefined;
@@ -133,6 +136,7 @@ pub fn init(
     module_instance: anytype,
     profiles_directory: []const u8,
     data_directory: []const u8,
+    corpus_directory: []const u8,
     runtime_store: *runtime_settings.Store,
 ) !void {
     gpa_allocator = allocator;
@@ -140,6 +144,8 @@ pub fn init(
     const abbreviation_result = try abbreviation.Store.initAt(allocator, data_directory);
     abbreviation_store = abbreviation_result.store;
     abbreviation_initialized = true;
+    corpus_service = try corpus.Service.initAt(allocator, corpus_directory);
+    corpus_initialized = true;
 
     // Initialize spellchecker
     spell_checker = try spellcheck.SpellChecker.init(allocator);
@@ -302,14 +308,112 @@ pub fn computePrediction(
             if (!result.addCandidate(&structured)) break;
         }
     }
+
+    if (settings.corpus_prediction) {
+        const corpus_predictions = corpus_service.predict(request.textSlice(), request.wordSlice());
+        for (corpus_predictions.slice()) |prediction| {
+            var corpus_text = prediction.slice();
+            const kind: candidate_model.CandidateKind = switch (prediction.kind) {
+                .word => if (settings.word_completion) .word_completion else continue,
+                .next_word => if (settings.next_word_prediction) .next_word else continue,
+                .phrase => if (settings.phrase_completion) .phrase_completion else if (settings.next_word_prediction) blk: {
+                    corpus_text = firstPredictedWord(corpus_text);
+                    break :blk .next_word;
+                } else continue,
+                .sentence => if (settings.sentence_prediction) .sentence_completion else if (settings.phrase_completion) blk: {
+                    corpus_text = firstPredictedWords(corpus_text, 4);
+                    break :blk .phrase_completion;
+                } else if (settings.next_word_prediction) blk: {
+                    corpus_text = firstPredictedWord(corpus_text);
+                    break :blk .next_word;
+                } else continue,
+            };
+            var structured = try candidate_model.Candidate.init(
+                kind,
+                .user_corpus,
+                corpus_text,
+                corpus_text,
+                if (kind == .word_completion) request.word_len else 0,
+                prediction.score,
+                prediction.confidence,
+            );
+            if (kind == .word_completion) {
+                try structured.addChunk(0, structured.insert_text.len, .word);
+            } else {
+                structured.chunk_count = candidate_model.buildCompletionChunks(structured.insert_text, &structured.chunks);
+            }
+            if (!structured.isValid()) continue;
+            if (!result.addCandidate(&structured)) replaceLowerPriorityCandidate(result, &structured);
+        }
+    }
+    sortPredictionCandidates(result);
+}
+
+fn firstPredictedWords(text: []const u8, maximum: usize) []const u8 {
+    var words: usize = 0;
+    var in_word = false;
+    for (text, 0..) |character, index| {
+        if (std.ascii.isWhitespace(character)) {
+            if (in_word) {
+                words += 1;
+                in_word = false;
+                if (words == maximum) return text[0..index];
+            }
+        } else in_word = true;
+    }
+    return text;
+}
+
+fn replaceLowerPriorityCandidate(result: *prediction_worker.PredictionResult, candidate: *const candidate_model.Candidate) void {
+    if (result.candidate_count == 0) return;
+    var weakest: usize = 0;
+    for (result.candidates[1..result.candidate_count], 1..) |item, index| {
+        const item_priority = sourcePriority(item.source);
+        const weakest_priority = sourcePriority(result.candidates[weakest].source);
+        if (item_priority < weakest_priority or (item_priority == weakest_priority and item.score < result.candidates[weakest].score)) weakest = index;
+    }
+    if (sourcePriority(result.candidates[weakest].source) >= sourcePriority(candidate.source)) return;
+    _ = result.candidates[weakest].set(candidate);
+}
+
+fn sortPredictionCandidates(result: *prediction_worker.PredictionResult) void {
+    const items = result.candidates[0..result.candidate_count];
+    var index: usize = 1;
+    while (index < items.len) : (index += 1) {
+        const value = items[index];
+        var insertion_position = index;
+        while (insertion_position > 0 and candidateBefore(value, items[insertion_position - 1])) : (insertion_position -= 1) items[insertion_position] = items[insertion_position - 1];
+        items[insertion_position] = value;
+    }
+}
+
+fn candidateBefore(left: prediction_worker.ResultCandidate, right: prediction_worker.ResultCandidate) bool {
+    const left_priority = sourcePriority(left.source);
+    const right_priority = sourcePriority(right.source);
+    return left_priority > right_priority or (left_priority == right_priority and left.score > right.score);
+}
+
+fn sourcePriority(source: candidate_model.CandidateSource) u8 {
+    return switch (source) {
+        .user_abbreviation => 6,
+        .personal_frequency, .learned_phrase, .repeated_sentence => 5,
+        .user_corpus => 4,
+        .dictionary => 3,
+        .spelling => 2,
+    };
 }
 
 /// Runs on the worker for accepted-word learning, never in the keyboard hook.
 pub fn recordPredictionFeedback(
     feedback_kind: prediction_worker.FeedbackKind,
     candidate_kind: candidate_model.CandidateKind,
+    candidate_source: candidate_model.CandidateSource,
     text: []const u8,
 ) !void {
+    if (candidate_source == .user_corpus) {
+        try corpus_service.recordFeedback(feedback_kind == .shown, text);
+        return;
+    }
     if (candidate_kind == .abbreviation_expansion) {
         if (feedback_kind == .accepted) abbreviation_store.recordAccepted(text);
         return;
@@ -493,7 +597,7 @@ pub fn showSuggestions(current_text: []const u8, current_word: []const u8, x: i3
             // Per-word exposure is queued back to the prediction thread. This
             // keeps scoring state single-threaded and enables ignore penalties.
             for (autocomplete_candidates.items) |candidate| {
-                prediction_worker.submitShownCandidate(candidate.kind, candidate.insert_text);
+                prediction_worker.submitShownCandidate(candidate.kind, candidate.source, candidate.insert_text);
             }
 
             // Update stats
@@ -843,7 +947,7 @@ pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) bool {
 
         // Add to vocabulary if learning is enabled
         if (config.BEHAVIOR.LEARN_FROM_ACCEPTED) {
-            prediction_worker.submitLearnedWord(suggestion);
+            prediction_worker.submitAcceptedCandidate(candidate.kind, candidate.source, suggestion);
         }
 
         // Update stats if enabled
@@ -905,7 +1009,7 @@ fn acceptAbbreviationCandidate(candidate: *const candidate_model.Candidate, mode
     buffer_controller.recordInjectedReplacement(current_word.len, shadow_text[0 .. acceptance.text.len + 1]) catch {
         buffer_controller.invalidatePhysicalInputState();
     };
-    prediction_worker.submitAcceptedCandidate(.abbreviation_expansion, current_word);
+    prediction_worker.submitAcceptedCandidate(.abbreviation_expansion, .user_abbreviation, current_word);
     sysinput.suggestion.stats.recordInsertionSuccess(&stats_instance);
     sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
     if (remaining.len == 0) {
@@ -969,7 +1073,7 @@ fn acceptProgressiveCandidate(
     buffer_controller.recordInjectedText(insertion_text) catch {
         buffer_controller.invalidatePhysicalInputState();
     };
-    prediction_worker.submitAcceptedCandidate(kind, accepted);
+    prediction_worker.submitAcceptedCandidate(kind, source, accepted);
     sysinput.suggestion.stats.recordInsertionSuccess(&stats_instance);
     sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
 
@@ -1130,6 +1234,10 @@ pub fn deinit() void {
         abbreviation_store.deinit();
         abbreviation_initialized = false;
     }
+    if (corpus_initialized) {
+        corpus_service.deinit();
+        corpus_initialized = false;
+    }
     if (profile_initialized) {
         profile_store.deinit();
         profile_initialized = false;
@@ -1147,4 +1255,8 @@ pub fn deinit() void {
 
 pub fn abbreviations() *abbreviation.Store {
     return &abbreviation_store;
+}
+
+pub fn corpora() *corpus.Service {
+    return &corpus_service;
 }

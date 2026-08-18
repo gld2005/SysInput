@@ -111,6 +111,8 @@ Check out our contribution guidelines for more details.
 
 Stage 12 abbreviation setup and verification are described in
 [docs/PHASE12_ABBREVIATIONS.md](docs/PHASE12_ABBREVIATIONS.md).
+Local corpus import and prediction are described in
+[docs/PHASE13_CORPUS.md](docs/PHASE13_CORPUS.md).
 
 **No suggestions?**
 

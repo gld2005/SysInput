@@ -420,9 +420,22 @@ pub const OPENFILENAMEA = extern struct {
     FlagsEx: DWORD,
 };
 
+pub const BROWSEINFOA = extern struct {
+    hwndOwner: ?HWND,
+    pidlRoot: ?*anyopaque,
+    pszDisplayName: [*:0]u8,
+    lpszTitle: ?[*:0]const u8,
+    ulFlags: UINT,
+    lpfn: ?*const fn (?HWND, UINT, LPARAM, LPARAM) callconv(.C) c_int,
+    lParam: LPARAM,
+    iImage: c_int,
+};
+
 pub const OFN_FILEMUSTEXIST = 0x00001000;
 pub const OFN_PATHMUSTEXIST = 0x00000800;
 pub const OFN_NOCHANGEDIR = 0x00000008;
+pub const BIF_RETURNONLYFSDIRS = 0x00000001;
+pub const BIF_NEWDIALOGSTYLE = 0x00000040;
 
 pub const NOTIFYICONDATAA = extern struct {
     cbSize: DWORD,
@@ -630,9 +643,12 @@ pub extern "user32" fn LoadCursorA(
 pub extern "user32" fn LoadIconA(hInstance: ?HINSTANCE, lpIconName: [*:0]const u8) callconv(.C) ?HICON;
 
 pub extern "shell32" fn Shell_NotifyIconA(dwMessage: DWORD, lpData: *NOTIFYICONDATAA) callconv(.C) BOOL;
+pub extern "shell32" fn SHBrowseForFolderA(info: *BROWSEINFOA) callconv(.C) ?*anyopaque;
+pub extern "shell32" fn SHGetPathFromIDListA(item: *anyopaque, path: [*:0]u8) callconv(.C) BOOL;
 pub extern "comdlg32" fn GetOpenFileNameA(param: *OPENFILENAMEA) callconv(.C) BOOL;
 pub extern "comdlg32" fn GetSaveFileNameA(param: *OPENFILENAMEA) callconv(.C) BOOL;
 pub extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: DWORD) callconv(.C) HRESULT;
+pub extern "ole32" fn CoTaskMemFree(memory: ?*anyopaque) callconv(.C) void;
 pub extern "ole32" fn CoCreateInstance(rclsid: *const GUID, pUnkOuter: ?*anyopaque, dwClsContext: DWORD, riid: *const GUID, ppv: **anyopaque) callconv(.C) HRESULT;
 pub extern "oleaut32" fn VariantClear(pvarg: *anyopaque) callconv(.C) HRESULT;
 

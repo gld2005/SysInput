@@ -5,6 +5,7 @@ const api = sysinput.win32.api;
 const runtime_settings = sysinput.core.runtime_settings;
 const exclusions = sysinput.core.application_exclusions;
 const abbreviation_window = sysinput.ui.abbreviation_window;
+const corpus_window = sysinput.ui.corpus_window;
 
 const WINDOW_CLASS = "SysInputSettingsWindow";
 const WINDOW_TITLE = "SysInput Settings";
@@ -23,6 +24,8 @@ const ID_MANAGE_ABBREVIATIONS = 2022;
 const ID_AUTO_ABBREVIATIONS = 2023;
 const ID_ABBREVIATION_PREFIX = 2024;
 const ID_SET_PREFIX = 2025;
+const ID_CORPUS = 2026;
+const ID_MANAGE_CORPUS = 2027;
 const ID_APP_LIST = 2030;
 const ID_ADD_CURRENT = 2031;
 const ID_BROWSE = 2032;
@@ -48,6 +51,7 @@ const bindings = [_]Binding{
     .{ .id = ID_SAFE_ARROWS, .feature = .safe_arrow_mode },
     .{ .id = ID_ABBREVIATIONS, .feature = .abbreviation_expansion },
     .{ .id = ID_AUTO_ABBREVIATIONS, .feature = .abbreviation_auto_expand },
+    .{ .id = ID_CORPUS, .feature = .corpus_prediction },
 };
 
 var allocator: std.mem.Allocator = undefined;
@@ -179,8 +183,8 @@ fn createControls(parent: api.HWND) !void {
     abbreviation_prefix = try createControl("EDIT", ";", api.ES_AUTOHSCROLL | api.WS_TABSTOP, 164, 276, 30, 22, parent, ID_ABBREVIATION_PREFIX);
     _ = try createControl("BUTTON", "Set", api.BS_PUSHBUTTON | api.WS_TABSTOP, 200, 276, 46, 22, parent, ID_SET_PREFIX);
     _ = try createControl("BUTTON", "Corpus", api.BS_GROUPBOX, 382, 232, 346, 66, parent, 0);
-    const corpus_note = try createControl("STATIC", "Available in Phase 13", 0, 398, 258, 290, 20, parent, 0);
-    _ = api.EnableWindow(corpus_note, 0);
+    controls[10] = try createControl("BUTTON", "Enable corpus prediction", api.BS_AUTOCHECKBOX | api.WS_TABSTOP, 398, 254, 200, 24, parent, ID_CORPUS);
+    _ = try createControl("BUTTON", "Manage...", api.BS_PUSHBUTTON | api.WS_TABSTOP, 620, 252, 88, 26, parent, ID_MANAGE_CORPUS);
 
     _ = try createControl("BUTTON", "Applications", api.BS_GROUPBOX, 16, 310, 712, 190, parent, 0);
     list_box = try createControl("LISTBOX", "", api.WS_VSCROLL | api.LBS_NOTIFY | api.WS_TABSTOP, 32, 338, 680, 100, parent, ID_APP_LIST);
@@ -353,8 +357,9 @@ fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: a
             const notification: usize = (w_param >> 16) & 0xffff;
             if (notification == api.BN_CLICKED) {
                 switch (id) {
-                    ID_ENABLED, ID_STARTUP, ID_WORD, ID_NEXT, ID_PHRASE, ID_SENTENCE, ID_LEARNING, ID_SAFE_ARROWS, ID_ABBREVIATIONS, ID_AUTO_ABBREVIATIONS => handleCheckbox(id),
+                    ID_ENABLED, ID_STARTUP, ID_WORD, ID_NEXT, ID_PHRASE, ID_SENTENCE, ID_LEARNING, ID_SAFE_ARROWS, ID_ABBREVIATIONS, ID_AUTO_ABBREVIATIONS, ID_CORPUS => handleCheckbox(id),
                     ID_MANAGE_ABBREVIATIONS => abbreviation_window.show(),
+                    ID_MANAGE_CORPUS => corpus_window.show(),
                     ID_SET_PREFIX => setAbbreviationPrefix(),
                     ID_ADD_CURRENT => addCurrentApplication(),
                     ID_BROWSE => browseApplication(),
