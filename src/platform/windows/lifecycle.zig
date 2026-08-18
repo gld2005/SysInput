@@ -7,12 +7,12 @@ const WINDOW_CLASS = "SysInputLifecycleWindow";
 const WINDOW_TITLE = "SysInput";
 const MUTEX_NAME = "Local\\SysInput.v0.2.SingleInstance";
 const RUN_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const SETTINGS_KEY = "Software\\SysInput";
 const RUN_VALUE = "SysInput";
-const CONFIGURED_VALUE = "StartupConfigured";
 
 const TRAY_CALLBACK = api.WM_APP + 2;
 const TRAY_ID = 1;
+const NIN_SELECT = api.WM_USER;
+const NIN_KEYSELECT = api.WM_USER + 1;
 const APP_ICON_ID = 101;
 const MENU_TOGGLE = 1001;
 const MENU_STARTUP = 1002;
@@ -141,7 +141,9 @@ pub fn init(
     }
 
     try addTrayIcon();
-    if (options.startup_write) initializeStartupPreference(options.portable) catch {};
+    if (shouldRefreshStartup(options, isStartupEnabled())) {
+        setStartupEnabled(g_allocator, true, false) catch {};
+    }
     g_callbacks.startup_changed(isStartupEnabled());
     _ = options.background;
 }
@@ -206,7 +208,6 @@ pub fn setStartupEnabled(allocator: std.mem.Allocator, enabled: bool, portable: 
     if (!enabled) {
         const status = api.RegDeleteValueA(key, RUN_VALUE);
         if (status != api.ERROR_SUCCESS and status != api.ERROR_FILE_NOT_FOUND) return error.RegistryWriteFailed;
-        try markStartupConfigured();
         return;
     }
 
@@ -222,51 +223,10 @@ pub fn setStartupEnabled(allocator: std.mem.Allocator, enabled: bool, portable: 
         command.ptr,
         @intCast(command.len + 1),
     ) != api.ERROR_SUCCESS) return error.RegistryWriteFailed;
-    try markStartupConfigured();
 }
 
-fn initializeStartupPreference(portable: bool) !void {
-    if (!startupWasConfigured()) {
-        try setStartupEnabled(g_allocator, true, portable);
-    } else if (isStartupEnabled()) {
-        // Refresh the absolute executable path after a portable move/update.
-        try setStartupEnabled(g_allocator, true, portable);
-    }
-}
-
-fn startupWasConfigured() bool {
-    var key: api.HKEY = undefined;
-    if (api.RegOpenKeyExA(api.HKEY_CURRENT_USER, SETTINGS_KEY, 0, api.KEY_QUERY_VALUE, &key) != api.ERROR_SUCCESS) {
-        return false;
-    }
-    defer _ = api.RegCloseKey(key);
-    return api.RegQueryValueExA(key, CONFIGURED_VALUE, null, null, null, null) == api.ERROR_SUCCESS;
-}
-
-fn markStartupConfigured() !void {
-    var key: api.HKEY = undefined;
-    if (api.RegCreateKeyExA(
-        api.HKEY_CURRENT_USER,
-        SETTINGS_KEY,
-        0,
-        null,
-        0,
-        api.KEY_SET_VALUE,
-        null,
-        &key,
-        null,
-    ) != api.ERROR_SUCCESS) return error.RegistryOpenFailed;
-    defer _ = api.RegCloseKey(key);
-
-    var configured: u32 = 1;
-    if (api.RegSetValueExA(
-        key,
-        CONFIGURED_VALUE,
-        0,
-        api.REG_DWORD,
-        @ptrCast(&configured),
-        @sizeOf(u32),
-    ) != api.ERROR_SUCCESS) return error.RegistryWriteFailed;
+pub fn shouldRefreshStartup(options: Options, currently_enabled: bool) bool {
+    return options.startup_write and !options.portable and currently_enabled;
 }
 
 fn addTrayIcon() !void {
@@ -361,7 +321,7 @@ fn showTrayMenu(hwnd: api.HWND) void {
     _ = api.AppendMenuA(menu, startup_flags, MENU_STARTUP, "Start with Windows");
     _ = api.AppendMenuA(menu, api.MF_STRING, MENU_ABOUT, "About");
     _ = api.AppendMenuA(menu, api.MF_SEPARATOR, 0, null);
-    _ = api.AppendMenuA(menu, api.MF_STRING, MENU_EXIT, "Exit");
+    _ = api.AppendMenuA(menu, api.MF_STRING, MENU_EXIT, "Exit SysInput");
 
     var point: api.POINT = undefined;
     if (api.GetCursorPos(&point) == 0) return;
@@ -402,13 +362,20 @@ fn captureExternalForeground() void {
     }
 }
 
+pub fn trayEventFromLParam(l_param: api.LPARAM) api.UINT {
+    const encoded: usize = @bitCast(l_param);
+    return @truncate(encoded & 0xffff);
+}
+
 fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: api.LPARAM) callconv(.C) api.LRESULT {
     switch (message) {
         TRAY_CALLBACK => {
             captureExternalForeground();
-            const event: u32 = @truncate(@as(usize, @bitCast(l_param)));
+            const event = trayEventFromLParam(l_param);
             if (event == api.WM_RBUTTONUP or event == api.WM_CONTEXTMENU) showTrayMenu(hwnd);
-            if (event == api.WM_LBUTTONUP or event == api.WM_LBUTTONDBLCLK) g_callbacks.open_settings();
+            if (event == api.WM_LBUTTONUP or event == api.WM_LBUTTONDBLCLK or event == NIN_SELECT or event == NIN_KEYSELECT) {
+                g_callbacks.open_settings();
+            }
             return 0;
         },
         api.WM_CLOSE => {

@@ -408,6 +408,9 @@ fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
     try expect(options.background);
     try expect(!options.startup_write);
     try expect(options.portable);
+    try expect(!lifecycle.shouldRefreshStartup(options, true));
+    try expect(!lifecycle.shouldRefreshStartup(.{}, false));
+    try expect(lifecycle.shouldRefreshStartup(.{}, true));
 
     const command = try lifecycle.startupCommand(allocator, "G:\\SysInput\\SysInput.exe", false);
     defer allocator.free(command);
@@ -419,6 +422,8 @@ fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
     try expectEqualStrings("SysInput - Enabled", lifecycle.trayTooltip(true, false));
     try expectEqualStrings("SysInput - Disabled", lifecycle.trayTooltip(false, false));
     try expectEqualStrings("SysInput - Paused for 30 minutes", lifecycle.trayTooltip(false, true));
+    try expect(lifecycle.trayEventFromLParam(@bitCast(@as(usize, (1 << 16) | api.WM_RBUTTONUP))) == api.WM_RBUTTONUP);
+    try expect(lifecycle.trayEventFromLParam(@bitCast(@as(usize, (1 << 16) | api.WM_LBUTTONUP))) == api.WM_LBUTTONUP);
 
     var first = (try lifecycle.SingleInstance.acquireNamed("Local\\SysInput.BaselineTest.SingleInstance")) orelse
         return error.BaselineTestFailed;
