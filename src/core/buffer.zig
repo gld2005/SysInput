@@ -219,6 +219,32 @@ pub const TextBuffer = struct {
         }
     }
 
+    /// Move the logical cursor to an absolute byte offset.
+    pub fn setCursorOffset(self: *TextBuffer, requested_offset: usize) void {
+        const target = @min(requested_offset, self.length);
+        while (self.cursor.offset > target) self.moveCursorLeft();
+        while (self.cursor.offset < target) self.moveCursorRight();
+    }
+
+    /// Mirror the usual Ctrl+Backspace behavior in the internal buffer.
+    pub fn deleteWordBackward(self: *TextBuffer) !void {
+        if (self.cursor.offset == 0 or self.length == 0) return error.NothingToDelete;
+
+        // Remove separators immediately before the word first.
+        while (self.cursor.offset > 0) {
+            self.updateContinuousContent();
+            if (insertion.isWordChar(self.continuous_content[self.cursor.offset - 1])) break;
+            try self.deleteCharBackward();
+        }
+
+        // Then remove the preceding word.
+        while (self.cursor.offset > 0) {
+            self.updateContinuousContent();
+            if (!insertion.isWordChar(self.continuous_content[self.cursor.offset - 1])) break;
+            try self.deleteCharBackward();
+        }
+    }
+
     /// Update the continuous content from the gap buffer
     fn updateContinuousContent(self: *TextBuffer) void {
         if (!self.content_dirty) return;
@@ -242,15 +268,13 @@ pub const TextBuffer = struct {
     }
 
     /// Get the current word under the cursor
-    pub fn getCurrentWord(self: TextBuffer) ![]const u8 {
+    pub fn getCurrentWord(self: *TextBuffer) ![]const u8 {
         // If cursor is at the end or buffer is empty
         if (self.length == 0 or self.cursor.offset > self.length) {
             return "";
         }
 
-        var word_buffer: [MAX_BUFFER_SIZE]u8 = undefined;
-        var self_copy = self;
-        const content = self_copy.getContent();
+        const content = self.getContent();
 
         // Find word boundaries
         var start = self.cursor.offset;
@@ -266,12 +290,6 @@ pub const TextBuffer = struct {
             end += 1;
         }
 
-        // Validate the word - check for null bytes or other issues
-        if (end - start > word_buffer.len) {
-            debug.debugPrint("Word too long for buffer\n", .{});
-            return "";
-        }
-
         const word = content[start..end];
         for (word) |c| {
             if (c == 0 or !std.ascii.isPrint(c)) {
@@ -281,9 +299,8 @@ pub const TextBuffer = struct {
             }
         }
 
-        // Copy to buffer and return
-        @memcpy(word_buffer[0..word.len], word);
-        return word_buffer[0..word.len];
+        // The returned slice remains valid until the next buffer mutation.
+        return word;
     }
 
     /// Clear the buffer
@@ -347,8 +364,21 @@ pub const BufferManager = struct {
     }
 
     /// Get the current word at cursor position
-    pub fn getCurrentWord(self: BufferManager) ![]const u8 {
+    pub fn getCurrentWord(self: *BufferManager) ![]const u8 {
         return try self.active_buffer.getCurrentWord();
+    }
+
+    pub fn setCursorOffset(self: *BufferManager, offset: usize) void {
+        self.active_buffer.setCursorOffset(offset);
+    }
+
+    pub fn getCursorOffset(self: *const BufferManager) usize {
+        return self.active_buffer.cursor.offset;
+    }
+
+    pub fn processCtrlBackspace(self: *BufferManager) !void {
+        try self.active_buffer.deleteWordBackward();
+        self.changed = true;
     }
 
     /// Clear the changed flag

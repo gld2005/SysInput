@@ -2,13 +2,14 @@ const std = @import("std");
 const sysinput = @import("root").sysinput;
 
 const win32 = sysinput.win32.hook;
+const api = sysinput.win32.api;
 const buffer_controller = sysinput.core.buffer_controller;
 const manager = sysinput.suggestion.manager;
 const debug = sysinput.core.debug;
-const api = sysinput.win32.api;
+const key_decoder = sysinput.input.key_decoder;
 
 pub var g_hook: ?win32.HHOOK = null;
-pub var g_ctrl_pressed: bool = false;
+var decoder = key_decoder.KeyboardDecoder{};
 
 pub fn setupKeyboardHook() !win32.HHOOK {
     const hInstance = win32.GetModuleHandleA(null);
@@ -22,211 +23,158 @@ pub fn setupKeyboardHook() !win32.HHOOK {
     return hook.?;
 }
 
-/// Process navigation keys for autocomplete UI
-fn processNavigationKeys(kbd: *win32.KBDLLHOOKSTRUCT) callconv(.C) win32.LRESULT {
-    // Debug output for suggestion navigation
+fn isKeyDown(message: win32.WPARAM) bool {
+    return message == win32.WM_KEYDOWN or message == win32.WM_SYSKEYDOWN;
+}
+
+fn isKeyUp(message: win32.WPARAM) bool {
+    return message == win32.WM_KEYUP or message == win32.WM_SYSKEYUP;
+}
+
+fn processSuggestionNavigation(kbd: *const win32.KBDLLHOOKSTRUCT) win32.LRESULT {
     debug.debugPrint("Suggestion navigation key: 0x{X}\n", .{kbd.vkCode});
 
-    // Handle navigation keys for autocomplete
     switch (kbd.vkCode) {
-        win32.VK_UP => {
-            // Move to previous suggestion
-            manager.navigateToPreviousSuggestion();
-            return 1; // Prevent default handling
-        },
-        win32.VK_DOWN => {
-            // Move to next suggestion
-            manager.navigateToNextSuggestion();
-            return 1; // Prevent default handling
-        },
-        win32.VK_TAB, win32.VK_RIGHT => {
-            debug.debugPrint("Accepting current suggestion\n", .{});
-            // Accept current suggestion
-            manager.acceptCurrentSuggestion();
-            return 1; // Prevent default handling
-        },
-        win32.VK_RETURN => {
-            debug.debugPrint("Accepting current suggestion with enter\n", .{});
-            // Accept current suggestion
-            manager.acceptCurrentSuggestion();
-
-            // Special handling for return key - after accepting suggestion,
-            // we also need to properly handle the return key itself, so we don't
-            // entirely consume it unless explicitly configured otherwise
-            const config_consume_enter = true; // Make this configurable
-            return if (config_consume_enter) 1 else 0;
-        },
+        win32.VK_UP => manager.navigateToPreviousSuggestion(),
+        win32.VK_DOWN => manager.navigateToNextSuggestion(),
+        win32.VK_TAB, win32.VK_RIGHT => manager.acceptCurrentSuggestion(),
+        win32.VK_RETURN => manager.acceptCurrentSuggestion(),
         else => return 0,
     }
+    return 1;
 }
 
-/// Process special key combinations like Ctrl+Backspace
-fn processSpecialKeys(kbd: *win32.KBDLLHOOKSTRUCT) callconv(.C) win32.LRESULT {
-    // Special handling for Ctrl+Backspace (whole word deletion)
-    if (kbd.vkCode == win32.VK_BACK and g_ctrl_pressed) {
-        debug.debugPrint("Ctrl+Backspace detected - deleting whole word\n", .{});
+fn refreshSuggestions() void {
+    buffer_controller.printBufferState();
+}
 
-        // First, let the application handle the real Ctrl+Backspace
-        // by passing it to the next hook
-        _ = win32.CallNextHookEx(null, win32.HC_ACTION, win32.WM_KEYDOWN, @as(win32.LPARAM, @bitCast(@intFromPtr(kbd))));
+fn processCtrlBackspace(kbd: *const win32.KBDLLHOOKSTRUCT) bool {
+    if (kbd.vkCode != win32.VK_BACK or !decoder.modifiers.ctrl) return false;
 
-        // Add a small delay to let the OS process the keypress
-        api.sleep(20);
+    buffer_controller.prepareForPhysicalInput();
+    buffer_controller.recordPhysicalCtrlBackspace() catch |err| {
+        debug.debugPrint("Ctrl+Backspace state error: {}\n", .{err});
+        buffer_controller.invalidatePhysicalInputState();
+    };
+    refreshSuggestions();
+    return true;
+}
 
-        // Now force detection of the text field to sync our buffer with the new content
-        buffer_controller.detectActiveTextField();
-
-        // After syncing, update autocomplete suggestions
-        const word = buffer_controller.getCurrentWord() catch "";
-        manager.setCurrentWord(word);
-        manager.getAutocompleteSuggestions() catch {};
-
-        // Print current buffer state to verify
-        buffer_controller.printBufferState();
-
-        // Return 0 to allow the key to be processed (we've already called the next hook)
-        return 0;
+fn processNavigationWithoutSuggestions(kbd: *const win32.KBDLLHOOKSTRUCT) bool {
+    switch (kbd.vkCode) {
+        win32.VK_LEFT => {
+            buffer_controller.prepareForPhysicalInput();
+            buffer_controller.recordPhysicalCursorLeft();
+            refreshSuggestions();
+        },
+        win32.VK_RIGHT => {
+            buffer_controller.prepareForPhysicalInput();
+            buffer_controller.recordPhysicalCursorRight();
+            refreshSuggestions();
+        },
+        win32.VK_UP,
+        win32.VK_DOWN,
+        win32.VK_HOME,
+        win32.VK_END,
+        win32.VK_PRIOR,
+        win32.VK_NEXT,
+        => {
+            buffer_controller.invalidatePhysicalInputState();
+            manager.hideSuggestions();
+        },
+        else => return false,
     }
-
-    return -1; // Indicates no special key was processed
+    return true;
 }
 
-/// Process standard text editing keys (backspace, delete, etc.)
-fn processTextEditingKeys(kbd: *win32.KBDLLHOOKSTRUCT) void {
-    debug.debugPrint("Key down: 0x{X}\n", .{kbd.vkCode});
+fn processPhysicalKey(kbd: *const win32.KBDLLHOOKSTRUCT) void {
+    debug.debugPrint("Physical key down: 0x{X}\n", .{kbd.vkCode});
 
-    // Exit application on ESC key
     if (kbd.vkCode == win32.VK_ESCAPE) {
+        // Preserve the current product behavior in this phase.
         debug.debugPrint("ESC pressed - exit\n", .{});
         std.process.exit(0);
     }
 
-    // Special key handling for text editing
-    if (kbd.vkCode == win32.VK_BACK) {
-        // Backspace key
-        buffer_controller.processBackspace() catch |err| {
-            debug.debugPrint("Backspace error: {}\n", .{err});
-        };
+    buffer_controller.prepareForPhysicalInput();
 
-        // Add a small delay to let the backspace take effect
-        api.sleep(5);
-
-        // Detect the text field again to ensure sync
-        buffer_controller.detectActiveTextField();
-
-        // Update suggestions based on new text state
-        const word = buffer_controller.getCurrentWord() catch "";
-        manager.setCurrentWord(word);
-        manager.getAutocompleteSuggestions() catch {};
-    } else if (kbd.vkCode == win32.VK_DELETE) {
-        // Delete key
-        buffer_controller.processDelete() catch |err| {
-            debug.debugPrint("Delete error: {}\n", .{err});
-        };
-    } else if (kbd.vkCode == win32.VK_RETURN) {
-        // Enter/Return key
-        buffer_controller.processReturn() catch |err| {
-            debug.debugPrint("Return error: {}\n", .{err});
-        };
-    } else if (kbd.vkCode == win32.VK_TAB) {
-        // Tab key might indicate focus change - detect text field
-        buffer_controller.detectActiveTextField();
-    } else {
-        // ASCII character input
-        const char: u8 = @truncate(kbd.vkCode);
-        buffer_controller.handleCharInput(char);
+    switch (kbd.vkCode) {
+        win32.VK_BACK => buffer_controller.recordPhysicalBackspace() catch |err| {
+            debug.debugPrint("Backspace state error: {}\n", .{err});
+            buffer_controller.invalidatePhysicalInputState();
+        },
+        win32.VK_DELETE => buffer_controller.recordPhysicalDelete() catch |err| {
+            debug.debugPrint("Delete state error: {}\n", .{err});
+            buffer_controller.invalidatePhysicalInputState();
+        },
+        win32.VK_RETURN => buffer_controller.recordPhysicalReturn() catch |err| {
+            debug.debugPrint("Return state error: {}\n", .{err});
+            buffer_controller.invalidatePhysicalInputState();
+        },
+        win32.VK_TAB => {
+            buffer_controller.invalidatePhysicalInputState();
+            manager.hideSuggestions();
+            return;
+        },
+        else => {
+            const char = decoder.decodeEnglishAscii(kbd) orelse return;
+            buffer_controller.recordPhysicalChar(char) catch |err| {
+                debug.debugPrint("Character state error: {}\n", .{err});
+                buffer_controller.invalidatePhysicalInputState();
+                return;
+            };
+        },
     }
 
-    // Debug: print current buffer state
-    buffer_controller.printBufferState();
+    refreshSuggestions();
 }
 
-/// Low-level keyboard hook callback function
 fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.C) win32.LRESULT {
-    // First, immediately check if we should pass this to the next hook
-    if (nCode < 0) {
+    if (nCode < 0) return win32.CallNextHookEx(null, nCode, wParam, lParam);
+    if (nCode != win32.HC_ACTION) return win32.CallNextHookEx(null, nCode, wParam, lParam);
+
+    const kbd = @as(*const win32.KBDLLHOOKSTRUCT, @ptrFromInt(@as(usize, @bitCast(lParam))));
+
+    // Injected events must reach the target application but must not re-enter
+    // prediction or learning.
+    if (key_decoder.isInjected(kbd.flags)) {
         return win32.CallNextHookEx(null, nCode, wParam, lParam);
     }
 
-    if (nCode == win32.HC_ACTION) {
-        const kbd = @as(*win32.KBDLLHOOKSTRUCT, @ptrFromInt(@as(usize, @bitCast(lParam))));
-
-        // Track Ctrl key state for both key down and key up events
-        if (kbd.vkCode == win32.VK_CONTROL) {
-            if (wParam == win32.WM_KEYDOWN or wParam == win32.WM_SYSKEYDOWN) {
-                g_ctrl_pressed = true;
-                debug.debugPrint("Ctrl key pressed\n", .{});
-            } else if (wParam == win32.WM_KEYUP or wParam == win32.WM_SYSKEYUP) {
-                g_ctrl_pressed = false;
-                debug.debugPrint("Ctrl key released\n", .{});
-            }
+    const down = isKeyDown(wParam);
+    const up = isKeyUp(wParam);
+    if (down or up) {
+        if (decoder.observeModifier(kbd.vkCode, down)) {
+            return win32.CallNextHookEx(null, nCode, wParam, lParam);
         }
+    }
+    if (!down) return win32.CallNextHookEx(null, nCode, wParam, lParam);
 
-        // Only process keydown events
-        if (wParam == win32.WM_KEYDOWN or wParam == win32.WM_SYSKEYDOWN) {
-            // Handle navigation keys when autocomplete is visible
-            if (manager.isSuggestionUIVisible() and
-                (kbd.vkCode == win32.VK_UP or
-                    kbd.vkCode == win32.VK_DOWN or
-                    kbd.vkCode == win32.VK_TAB or
-                    kbd.vkCode == win32.VK_RIGHT or
-                    kbd.vkCode == win32.VK_RETURN))
-            {
-                const result = processNavigationKeys(kbd);
-                if (result >= 0) return result;
-            }
-
-            // Process special key combinations
-            const special_result = processSpecialKeys(kbd);
-            if (special_result >= 0) return special_result;
-
-            // Limit processing to printable characters and specific control keys
-            const is_control_key =
-                kbd.vkCode == win32.VK_ESCAPE or
-                kbd.vkCode == win32.VK_BACK or
-                kbd.vkCode == win32.VK_DELETE or
-                kbd.vkCode == win32.VK_RETURN or
-                kbd.vkCode == win32.VK_TAB;
-
-            const is_navigation_key = (kbd.vkCode == win32.VK_LEFT or
-                kbd.vkCode == win32.VK_RIGHT or
-                kbd.vkCode == win32.VK_UP or
-                kbd.vkCode == win32.VK_DOWN or
-                kbd.vkCode == win32.VK_HOME or
-                kbd.vkCode == win32.VK_END or
-                kbd.vkCode == win32.VK_PRIOR or // Page Up
-                kbd.vkCode == win32.VK_NEXT); // Page Down
-
-            // If suggestions UI is visible, use navigation keys for selection
-            if (manager.isSuggestionUIVisible()) {
-                if (kbd.vkCode == win32.VK_UP) {
-                    manager.navigateToPreviousSuggestion();
-                    return 1; // Consume the key
-                } else if (kbd.vkCode == win32.VK_DOWN) {
-                    manager.navigateToNextSuggestion();
-                    return 1; // Consume the key
-                } else if (kbd.vkCode == win32.VK_TAB or
-                    kbd.vkCode == win32.VK_RETURN or
-                    kbd.vkCode == win32.VK_RIGHT)
-                {
-                    debug.debugPrint("Accepting suggestion via key: 0x{X}\n", .{kbd.vkCode});
-                    manager.acceptCurrentSuggestion();
-                    return 1; // Consume the key
-                }
-            } else if (is_navigation_key) {
-                // If no suggestion UI, just pass navigation keys through
-                return win32.CallNextHookEx(null, nCode, wParam, lParam);
-            }
-
-            const is_printable = kbd.vkCode >= 0x20 and kbd.vkCode <= 0x7E;
-
-            if (is_control_key or is_printable) {
-                processTextEditingKeys(kbd);
-            }
+    if (manager.isSuggestionUIVisible()) {
+        switch (kbd.vkCode) {
+            win32.VK_UP,
+            win32.VK_DOWN,
+            win32.VK_TAB,
+            win32.VK_RIGHT,
+            win32.VK_RETURN,
+            => return processSuggestionNavigation(kbd),
+            else => {},
         }
     }
 
-    // Always call the next hook in the chain
+    if (processCtrlBackspace(kbd)) {
+        return win32.CallNextHookEx(null, nCode, wParam, lParam);
+    }
+
+    if (processNavigationWithoutSuggestions(kbd)) {
+        return win32.CallNextHookEx(null, nCode, wParam, lParam);
+    }
+
+    if (decoder.modifiers.ctrl or decoder.modifiers.alt or key_decoder.isModifier(kbd.vkCode)) {
+        return win32.CallNextHookEx(null, nCode, wParam, lParam);
+    }
+
+    processPhysicalKey(kbd);
     return win32.CallNextHookEx(null, nCode, wParam, lParam);
 }
 

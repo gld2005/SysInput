@@ -56,17 +56,7 @@ pub const TextField = struct {
     /// Update this text field with information from the current focused window
     pub fn detectActiveTextField(self: *TextField) !void {
         // Get the currently focused window
-        const focused_window = api.GetFocus();
-        if (focused_window == null) {
-            // If no window has focus, try the foreground window instead
-            const foreground_window = api.GetForegroundWindow();
-            if (foreground_window == null) {
-                return TextFieldError.InvalidHandle;
-            }
-            self.handle = foreground_window.?;
-        } else {
-            self.handle = focused_window.?;
-        }
+        self.handle = api.getFocusedWindow() orelse return TextFieldError.InvalidHandle;
 
         // Get the window class name to determine if it's a text field
         const class_name_ptr: [*:0]u8 = @ptrCast(&self.class_name);

@@ -40,14 +40,45 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run SysInput");
     run_step.dependOn(&run_cmd.step);
 
-    // Create tests
-    const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+    // Characterization and performance-baseline tests. These intentionally
+    // exercise the current behavior before the prediction pipeline is changed.
+    // The project modules resolve shared imports through @import("root").
+    // Building the characterization suite as a small executable preserves that
+    // existing module contract while still making `zig build test` repeatable.
+    const unit_tests = b.addExecutable(.{
+        .name = "SysInputBaselineTests",
+        .root_source_file = b.path("src/baseline_tests.zig"),
         .target = target,
         .optimize = optimize,
     });
 
+    if (target.result.os.tag == .windows) {
+        unit_tests.linkSystemLibrary("user32");
+        unit_tests.linkSystemLibrary("gdi32");
+        unit_tests.linkLibC();
+    }
+
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // A standalone, non-interactive benchmark for repeatable measurements.
+    // It does not install or launch the keyboard hook.
+    const baseline = b.addExecutable(.{
+        .name = "SysInputBaseline",
+        .root_source_file = b.path("src/baseline.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    if (target.result.os.tag == .windows) {
+        baseline.linkSystemLibrary("user32");
+        baseline.linkSystemLibrary("gdi32");
+        baseline.linkSystemLibrary("psapi");
+        baseline.linkLibC();
+    }
+
+    const run_baseline = b.addRunArtifact(baseline);
+    const baseline_step = b.step("baseline", "Measure the current prediction baseline");
+    baseline_step.dependOn(&run_baseline.step);
 }

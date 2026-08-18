@@ -3,6 +3,8 @@
 // Organized by functional areas
 //-----------------------------------------------------------------------------
 
+const std = @import("std");
+
 //=============================================================================
 // BASIC TYPES AND HANDLES
 //=============================================================================
@@ -29,6 +31,7 @@ pub const HDC = *anyopaque; // Device context handle
 pub const HFONT = *anyopaque; // Font handle
 pub const HGDIOBJ = *anyopaque; // GDI object handle
 pub const HBRUSH = *anyopaque; // Brush handle
+pub const HKL = HANDLE; // Keyboard layout handle
 
 //=============================================================================
 // WINDOW MESSAGE CONSTANTS
@@ -74,6 +77,9 @@ pub const HC_ACTION = 0;
 pub const INPUT_KEYBOARD = 1;
 pub const KEYEVENTF_KEYUP = 0x0002;
 pub const KEYEVENTF_UNICODE = 0x0004;
+pub const LLKHF_LOWER_IL_INJECTED = 0x00000002;
+pub const LLKHF_INJECTED = 0x00000010;
+pub const TO_UNICODE_NO_STATE_CHANGE = 0x00000004;
 
 // Virtual Key Constants
 pub const VK_ESCAPE = 0x1B;
@@ -91,8 +97,15 @@ pub const VK_TAB = 0x09; // Tab key
 pub const VK_SHIFT = 0x10; // Shift key
 pub const VK_CONTROL = 0x11; // Control key
 pub const VK_MENU = 0x12; // Alt key
+pub const VK_CAPITAL = 0x14; // Caps Lock
 pub const VK_PRIOR = 0x21; // Page Up
 pub const VK_NEXT = 0x22; // Page Down
+pub const VK_LSHIFT = 0xA0;
+pub const VK_RSHIFT = 0xA1;
+pub const VK_LCONTROL = 0xA2;
+pub const VK_RCONTROL = 0xA3;
+pub const VK_LMENU = 0xA4;
+pub const VK_RMENU = 0xA5;
 
 //=============================================================================
 // WINDOW STYLE AND APPEARANCE CONSTANTS
@@ -417,6 +430,19 @@ pub extern "user32" fn SendInput(
     cbSize: c_int,
 ) callconv(.C) UINT;
 
+pub extern "user32" fn GetKeyboardState(lpKeyState: *[256]BYTE) callconv(.C) BOOL;
+pub extern "user32" fn GetKeyState(nVirtKey: c_int) callconv(.C) i16;
+pub extern "user32" fn GetKeyboardLayout(idThread: DWORD) callconv(.C) HKL;
+pub extern "user32" fn ToUnicodeEx(
+    wVirtKey: UINT,
+    wScanCode: UINT,
+    lpKeyState: *const [256]BYTE,
+    pwszBuff: [*]WCHAR,
+    cchBuff: c_int,
+    wFlags: UINT,
+    dwhkl: HKL,
+) callconv(.C) c_int;
+
 // Cursor and caret management
 pub extern "user32" fn GetCursorPos(
     lpPoint: *POINT,
@@ -669,6 +695,20 @@ pub fn getWindowThreadProcessId(hwnd: HWND, processId: ?*DWORD) DWORD {
 
 pub fn getGUIThreadInfo(threadId: DWORD, info: *GUITHREADINFO) BOOL {
     return GetGUIThreadInfo(threadId, info);
+}
+
+/// Resolve the focused control belonging to the foreground GUI thread.
+/// GetFocus() only describes the caller's thread and is insufficient for a
+/// system-wide input helper.
+pub fn getFocusedWindow() ?HWND {
+    const foreground = GetForegroundWindow() orelse return null;
+    const thread_id = GetWindowThreadProcessId(foreground, null);
+    if (thread_id == 0) return foreground;
+
+    var info = std.mem.zeroes(GUITHREADINFO);
+    info.cbSize = @sizeOf(GUITHREADINFO);
+    if (GetGUIThreadInfo(thread_id, &info) == 0) return foreground;
+    return info.hwndFocus orelse foreground;
 }
 
 // --- Device Context and Drawing ---

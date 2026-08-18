@@ -15,8 +15,9 @@ const SuggestionCache = struct {
     input: [config.TEXT.MAX_SUGGESTION_LEN]u8,
     /// Input length (since input might contain garbage past this)
     input_len: usize,
-    /// The cached suggestions
-    suggestions: [MAX_SUGGESTIONS][]const u8,
+    /// Owned fixed storage avoids retaining slices owned by a result list.
+    suggestion_storage: [MAX_SUGGESTIONS][config.TEXT.MAX_SUGGESTION_LEN]u8,
+    suggestion_lengths: [MAX_SUGGESTIONS]u16,
     /// Number of valid suggestions in the cache
     count: usize,
     /// Whether the cache is valid
@@ -26,7 +27,10 @@ const SuggestionCache = struct {
         return .{
             .input = [_]u8{0} ** config.TEXT.MAX_SUGGESTION_LEN,
             .input_len = 0,
-            .suggestions = [_][]const u8{""} ** MAX_SUGGESTIONS,
+            .suggestion_storage = [_][config.TEXT.MAX_SUGGESTION_LEN]u8{
+                [_]u8{0} ** config.TEXT.MAX_SUGGESTION_LEN,
+            } ** MAX_SUGGESTIONS,
+            .suggestion_lengths = [_]u16{0} ** MAX_SUGGESTIONS,
             .count = 0,
             .valid = false,
         };
@@ -46,9 +50,13 @@ const SuggestionCache = struct {
         @memcpy(self.input[0..input.len], input);
         self.input_len = input.len;
 
-        self.count = @min(new_suggestions.len, MAX_SUGGESTIONS);
-        for (0..self.count) |i| {
-            self.suggestions[i] = new_suggestions[i];
+        self.count = 0;
+        for (new_suggestions[0..@min(new_suggestions.len, MAX_SUGGESTIONS)]) |suggestion| {
+            const destination = self.count;
+            if (suggestion.len > self.suggestion_storage[destination].len) continue;
+            @memcpy(self.suggestion_storage[destination][0..suggestion.len], suggestion);
+            self.suggestion_lengths[destination] = @intCast(suggestion.len);
+            self.count += 1;
         }
 
         self.valid = true;
@@ -163,7 +171,7 @@ pub const AutocompleteEngine = struct {
 
             // Copy cached suggestions to results
             for (0..self.cache.count) |i| {
-                const cached_suggestion = self.cache.suggestions[i];
+                const cached_suggestion = self.cache.suggestion_storage[i][0..self.cache.suggestion_lengths[i]];
                 const owned_suggestion = try self.allocator.dupe(u8, cached_suggestion);
                 try results.append(owned_suggestion);
             }

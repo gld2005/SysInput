@@ -33,6 +33,7 @@ var sync_attempt_count: u8 = 0;
 pub var window_class_to_mode: std.StringHashMap(u8) = undefined; // No initial init
 
 var last_content_hash: u64 = 0;
+var last_focus_hwnd: ?api.HWND = null;
 
 pub fn init(allocator: std.mem.Allocator) !void {
     buffer_allocator = allocator;
@@ -65,6 +66,7 @@ pub fn detectActiveTextField() void {
     const active_field_found = text_field_manager.detectActiveField();
 
     if (active_field_found) {
+        last_focus_hwnd = text_field_manager.active_field.handle;
         debug.debugPrint("Active text field detected\n", .{});
 
         // Get the text content from the field
@@ -88,10 +90,59 @@ pub fn detectActiveTextField() void {
             }
         };
 
+        // The text copy initially leaves the gap cursor at the end. Restore the
+        // control's actual selection end so word extraction follows the caret.
+        buffer_manager.setCursorOffset(@min(text_field_manager.active_field.selection_end, text.len));
+        last_content_hash = 0;
+
         debug.debugPrint("Synced buffer with text field content: \"{s}\"\n", .{text});
     } else {
         debug.debugPrint("No active text field found\n", .{});
+        buffer_manager.resetBuffer();
+        last_content_hash = 0;
     }
+}
+
+/// Refresh context only when focus moved to another control. Unsupported
+/// controls still get a clean rolling buffer rather than text from the prior
+/// application.
+pub fn prepareForPhysicalInput() void {
+    const focused = api.getFocusedWindow();
+    if (focused == last_focus_hwnd) {
+        // For standard Edit/RichEdit controls, cheaply detect keyboard or mouse
+        // caret movement without re-reading the complete text on every key.
+        if (focused != null and text_field_manager.has_active_field and
+            text_field_manager.active_field.handle == focused.?)
+        {
+            const selection = api.SendMessageA(focused.?, api.EM_GETSEL, 0, 0);
+            const selection_start: usize = @intCast(selection & 0xFFFF);
+            const selection_end: usize = @intCast((selection >> 16) & 0xFFFF);
+
+            if (selection_start == selection_end) {
+                if (selection_end != buffer_manager.getCursorOffset()) {
+                    detectActiveTextField();
+                }
+            } else {
+                // Selection replacement is control-specific. Discard stale
+                // context rather than learning text that the next key removes.
+                buffer_manager.resetBuffer();
+                last_content_hash = 0;
+            }
+        }
+        return;
+    }
+
+    last_focus_hwnd = focused;
+    detectActiveTextField();
+}
+
+/// Force a fresh control read before the next physical character, for keys
+/// whose resulting caret location cannot be inferred safely.
+pub fn invalidatePhysicalInputState() void {
+    last_focus_hwnd = null;
+    text_field_manager.has_active_field = false;
+    buffer_manager.resetBuffer();
+    last_content_hash = 0;
 }
 
 /// Sync the text field with our buffer content using multiple methods
@@ -304,6 +355,36 @@ pub fn handleCharInput(char: u8) void {
         debug.debugPrint("Char input error: {}\n", .{err});
     };
     syncTextFieldWithBuffer();
+}
+
+/// Record physical input without writing the entire buffer back to the target
+/// application. The original key event is allowed to perform the real edit.
+pub fn recordPhysicalChar(char: u8) !void {
+    try buffer_manager.processKeyPress(char, true);
+}
+
+pub fn recordPhysicalBackspace() !void {
+    try buffer_manager.processBackspace();
+}
+
+pub fn recordPhysicalCtrlBackspace() !void {
+    try buffer_manager.processCtrlBackspace();
+}
+
+pub fn recordPhysicalDelete() !void {
+    try buffer_manager.processDelete();
+}
+
+pub fn recordPhysicalReturn() !void {
+    try buffer_manager.processKeyPress('\n', true);
+}
+
+pub fn recordPhysicalCursorLeft() void {
+    buffer_manager.active_buffer.moveCursorLeft();
+}
+
+pub fn recordPhysicalCursorRight() void {
+    buffer_manager.active_buffer.moveCursorRight();
 }
 
 /// Check if there's an active text field

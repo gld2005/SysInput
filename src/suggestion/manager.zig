@@ -12,6 +12,7 @@ const insertion = sysinput.win32.insertion;
 const window_detection = sysinput.input.window_detection;
 const stats = sysinput.suggestion.stats;
 const config = sysinput.core.config;
+const candidate_model = sysinput.suggestion.candidate;
 
 /// Global variables for allocator access
 var gpa_allocator: std.mem.Allocator = undefined;
@@ -28,7 +29,13 @@ pub var autocomplete_engine: autocomplete.AutocompleteEngine = undefined;
 /// List for storing word suggestions
 pub var suggestions: std.ArrayList([]const u8) = undefined;
 
-/// Autocompletion suggestions list
+/// Raw strings owned by the autocomplete engine result contract.
+var raw_autocomplete_suggestions: std.ArrayList([]const u8) = undefined;
+
+/// Structured candidates are the primary internal representation.
+pub var autocomplete_candidates: std.ArrayList(candidate_model.Candidate) = undefined;
+
+/// Borrowed display-text adapter retained for the existing UI.
 pub var autocomplete_suggestions: std.ArrayList([]const u8) = undefined;
 
 /// Global UI for autocompletion suggestions
@@ -38,11 +45,11 @@ pub var autocomplete_ui_manager: suggestion_ui.AutocompleteUI = undefined;
 pub var last_word: [256]u8 = undefined;
 pub var last_word_len: usize = 0;
 
-// Replace the clearSuggestions function with this:
 pub fn clearSuggestions() void {
-    // Destroy the entire list and create a new one
-    autocomplete_suggestions.deinit();
-    autocomplete_suggestions = std.ArrayList([]const u8).init(gpa_allocator);
+    autocomplete_candidates.clearRetainingCapacity();
+    autocomplete_suggestions.clearRetainingCapacity();
+    for (raw_autocomplete_suggestions.items) |item| gpa_allocator.free(item);
+    raw_autocomplete_suggestions.clearRetainingCapacity();
 }
 
 // Update getAutocompleteSuggestions
@@ -53,7 +60,7 @@ pub fn getAutocompleteSuggestions() !void {
     // Skip processing if the word hasn't changed
     if (current_word.len > 0 and current_word.len == last_word_len and
         std.mem.eql(u8, current_word, last_word[0..last_word_len]) and
-        autocomplete_suggestions.items.len > 0)
+        autocomplete_candidates.items.len > 0)
     {
         return error.NoSuggestionsNeeded;
     }
@@ -70,8 +77,31 @@ pub fn getAutocompleteSuggestions() !void {
     // Clear suggestions by recreating the list
     clearSuggestions();
 
-    // Get new suggestions
-    try autocomplete_engine.getSuggestions(&autocomplete_suggestions);
+    // Generate legacy word strings, then immediately describe them with the
+    // structured model. The UI receives only a borrowed display adapter.
+    try autocomplete_engine.getSuggestions(&raw_autocomplete_suggestions);
+    for (raw_autocomplete_suggestions.items) |text| {
+        const personal_frequency = autocomplete_engine.user_words.get(text);
+        const source: candidate_model.CandidateSource = if (personal_frequency != null)
+            .personal_frequency
+        else
+            .dictionary;
+        const score: i32 = if (personal_frequency) |frequency|
+            @intCast(@min(frequency, @as(u32, std.math.maxInt(i32))))
+        else
+            0;
+        const confidence: u16 = if (personal_frequency != null) 700 else 500;
+
+        const structured = try candidate_model.Candidate.wordCompletion(
+            text,
+            current_word.len,
+            source,
+            score,
+            confidence,
+        );
+        try autocomplete_candidates.append(structured);
+        try autocomplete_suggestions.append(structured.display_text);
+    }
 }
 
 /// Initialize suggestion handling components
@@ -83,6 +113,8 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
 
     // Initialize suggestions lists
     suggestions = std.ArrayList([]const u8).init(allocator);
+    raw_autocomplete_suggestions = std.ArrayList([]const u8).init(allocator);
+    autocomplete_candidates = std.ArrayList(candidate_model.Candidate).init(allocator);
     autocomplete_suggestions = std.ArrayList([]const u8).init(allocator);
 
     // Initialize autocompletion engine
@@ -128,17 +160,20 @@ pub fn getSpellingSuggestions(word: []const u8) !void {
 /// Show suggestions in UI
 pub fn showSuggestions(current_text: []const u8, current_word: []const u8, x: i32, y: i32) !void {
     debug.debugPrint("Handler showSuggestions called with word '{s}'\n", .{current_word});
-    debug.debugPrint("Have {d} suggestions to display\n", .{autocomplete_suggestions.items.len});
+    debug.debugPrint("Have {d} structured candidates to display\n", .{autocomplete_candidates.items.len});
 
     // Print first few suggestions
-    for (autocomplete_suggestions.items, 0..) |sugg, i| {
+    for (autocomplete_candidates.items, 0..) |candidate, i| {
         if (i < 5) {
-            debug.debugPrint("  Suggestion {d}: '{s}'\n", .{ i, sugg });
+            debug.debugPrint(
+                "  Candidate {d}: '{s}' ({s}/{s}, confidence={d})\n",
+                .{ i, candidate.display_text, @tagName(candidate.kind), @tagName(candidate.source), candidate.confidence },
+            );
         }
     }
 
     // Use config for minimum word length to show suggestions
-    if (autocomplete_suggestions.items.len > 0 and
+    if (autocomplete_candidates.items.len > 0 and
         current_word.len >= config.BEHAVIOR.MIN_TRIGGER_LEN)
     {
         // Only show suggestions if auto-show is enabled
@@ -355,10 +390,33 @@ pub fn replaceSuggestionWord(current_word: []const u8, suggestion: []const u8) b
     return success;
 }
 
+fn findCandidateByDisplayText(text: []const u8) ?*const candidate_model.Candidate {
+    for (autocomplete_candidates.items) |*candidate| {
+        if (std.mem.eql(u8, candidate.display_text, text)) return candidate;
+    }
+    return null;
+}
+
+fn getSelectedCandidate() ?*const candidate_model.Candidate {
+    const index = autocomplete_ui_manager.selected_index;
+    if (index < 0) return null;
+    const item_index: usize = @intCast(index);
+    if (item_index >= autocomplete_candidates.items.len) return null;
+    return &autocomplete_candidates.items[item_index];
+}
+
 /// Handle suggestion selection from the autocomplete UI
 pub fn handleSuggestionSelection(suggestion: []const u8) void {
-    // Get the current word being typed
-    debug.debugPrint("Handling suggestion selection for: '{s}'\n", .{suggestion});
+    const candidate = findCandidateByDisplayText(suggestion) orelse {
+        debug.debugPrint("No structured candidate for UI selection: '{s}'\n", .{suggestion});
+        return;
+    };
+    if (candidate.kind != .word_completion) {
+        debug.debugPrint("Candidate kind {s} is not accepted in this phase\n", .{@tagName(candidate.kind)});
+        return;
+    }
+
+    debug.debugPrint("Handling candidate selection for: '{s}'\n", .{candidate.display_text});
 
     const current_word = buffer_controller.getCurrentWord() catch {
         debug.debugPrint("Error getting current word\n", .{});
@@ -370,7 +428,7 @@ pub fn handleSuggestionSelection(suggestion: []const u8) void {
         debug.debugPrint("Current word: '{s}'\n", .{current_word});
 
         // Simply call replaceSuggestionWord which contains all the logic
-        if (replaceSuggestionWord(current_word, suggestion)) {
+        if (replaceSuggestionWord(current_word, candidate.insert_text)) {
             // Update stats
             sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
         }
@@ -379,12 +437,18 @@ pub fn handleSuggestionSelection(suggestion: []const u8) void {
 
 /// Accept the current suggestion
 pub fn acceptCurrentSuggestion() void {
-    if (!autocomplete_ui_manager.is_visible or autocomplete_ui_manager.current_suggestion == null) {
+    if (!autocomplete_ui_manager.is_visible) return;
+
+    const candidate = getSelectedCandidate() orelse return;
+    if (candidate.kind != .word_completion) {
+        debug.debugPrint("Candidate kind {s} is not accepted in this phase\n", .{@tagName(candidate.kind)});
         return;
     }
-
-    const suggestion = autocomplete_ui_manager.current_suggestion.?;
-    debug.debugPrint("Accepting suggestion: '{s}'\n", .{suggestion});
+    const suggestion = candidate.insert_text;
+    debug.debugPrint(
+        "Accepting candidate: '{s}' ({s}/{s})\n",
+        .{ candidate.display_text, @tagName(candidate.kind), @tagName(candidate.source) },
+    );
 
     // Get the current word
     const current_word = buffer_controller.getCurrentWord() catch {
@@ -395,6 +459,13 @@ pub fn acceptCurrentSuggestion() void {
     if (current_word.len == 0) {
         debug.debugPrint("No current word to replace\n", .{});
         return;
+    }
+
+    if (candidate.replace_length != current_word.len) {
+        debug.debugPrint(
+            "Candidate replace range changed from {d} to {d}; using live word\n",
+            .{ candidate.replace_length, current_word.len },
+        );
     }
 
     debug.debugPrint("Replacing '{s}' with '{s}'\n", .{ current_word, suggestion });
@@ -537,9 +608,10 @@ pub fn isSuggestionUIVisible() bool {
 
 /// Navigate to previous suggestion
 pub fn navigateToPreviousSuggestion() void {
+    if (autocomplete_candidates.items.len == 0) return;
     // Move to previous suggestion
     const new_index = if (autocomplete_ui_manager.selected_index <= 0)
-        @as(i32, @intCast(autocomplete_suggestions.items.len - 1))
+        @as(i32, @intCast(autocomplete_candidates.items.len - 1))
     else
         autocomplete_ui_manager.selected_index - 1;
 
@@ -549,8 +621,10 @@ pub fn navigateToPreviousSuggestion() void {
 
 /// Navigate to next suggestion
 pub fn navigateToNextSuggestion() void {
+    if (autocomplete_candidates.items.len == 0) return;
     // Move to next suggestion
-    const new_index = if (autocomplete_ui_manager.selected_index >= autocomplete_suggestions.items.len - 1)
+    const last_index: i32 = @intCast(autocomplete_candidates.items.len - 1);
+    const new_index = if (autocomplete_ui_manager.selected_index >= last_index)
         0
     else
         autocomplete_ui_manager.selected_index + 1;
@@ -571,7 +645,7 @@ pub fn selectSuggestion(index: i32) void {
 
 /// Get number of available suggestions
 pub fn getSuggestionCount() usize {
-    return autocomplete_suggestions.items.len;
+    return autocomplete_candidates.items.len;
 }
 
 /// Add a word to the autocompletion engine's vocabulary
@@ -582,7 +656,10 @@ pub fn addWordToVocabulary(word: []const u8) !void {
 /// Deinitialize components
 pub fn deinit() void {
     // Free resources
+    clearSuggestions();
     suggestions.deinit();
+    raw_autocomplete_suggestions.deinit();
+    autocomplete_candidates.deinit();
     autocomplete_suggestions.deinit();
 
     spell_checker.deinit();
