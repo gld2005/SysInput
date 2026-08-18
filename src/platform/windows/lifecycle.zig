@@ -19,6 +19,11 @@ const MENU_STARTUP = 1002;
 const MENU_EXIT = 1003;
 const MENU_SETTINGS = 1004;
 const MENU_EXCLUDE_CURRENT = 1005;
+const MENU_PAUSE = 1006;
+const MENU_FEEDBACK = 1007;
+const MENU_ABOUT = 1008;
+const PAUSE_TIMER_ID: usize = 1;
+const PAUSE_DURATION_MS: api.UINT = 30 * 60 * 1000;
 
 pub const Options = struct {
     background: bool = false,
@@ -61,7 +66,10 @@ pub const Callbacks = struct {
     set_enabled: *const fn (bool) bool,
     startup_changed: *const fn (bool) void,
     open_settings: *const fn () void,
+    open_about: *const fn () void,
     exclude_window: *const fn (?api.HWND) bool,
+    pause_input: *const fn () bool,
+    resume_input: *const fn () bool,
 };
 
 var g_allocator: std.mem.Allocator = undefined;
@@ -71,6 +79,7 @@ var g_window_class: api.ATOM = 0;
 var g_icon_data: api.NOTIFYICONDATAA = undefined;
 var g_icon_added = false;
 var g_enabled = true;
+var g_paused = false;
 var g_portable = false;
 var g_callbacks: Callbacks = undefined;
 var g_last_external_foreground: ?api.HWND = null;
@@ -87,6 +96,7 @@ pub fn init(
     g_instance = instance;
     g_callbacks = callbacks;
     g_enabled = initial_enabled;
+    g_paused = false;
     g_portable = options.portable;
 
     const application_icon = api.LoadIconA(instance, api.makeIntResource(APP_ICON_ID));
@@ -137,6 +147,7 @@ pub fn init(
 }
 
 pub fn deinit() void {
+    cancelPauseTimer();
     if (g_icon_added) {
         _ = api.Shell_NotifyIconA(api.NIM_DELETE, &g_icon_data);
         g_icon_added = false;
@@ -149,6 +160,14 @@ pub fn deinit() void {
         _ = api.UnregisterClassA(WINDOW_CLASS, g_instance.?);
         g_window_class = 0;
     }
+}
+
+pub fn syncEnabled(enabled: bool) void {
+    if (g_window == null) return;
+    cancelPauseTimer();
+    g_enabled = enabled;
+    g_paused = false;
+    updateTrayTooltip();
 }
 
 pub fn startupCommand(allocator: std.mem.Allocator, executable_path: []const u8, portable: bool) ![:0]u8 {
@@ -260,7 +279,7 @@ fn addTrayIcon() !void {
     g_icon_data.uCallbackMessage = TRAY_CALLBACK;
     g_icon_data.hIcon = api.LoadIconA(g_instance, api.makeIntResource(APP_ICON_ID)) orelse
         api.LoadIconA(null, api.makeIntResource(api.IDI_APPLICATION));
-    setTooltip(if (g_enabled) "SysInput - Enabled" else "SysInput - Paused");
+    setTooltip(tooltipText());
     if (api.Shell_NotifyIconA(api.NIM_ADD, &g_icon_data) == 0) return error.TrayIconCreationFailed;
     g_icon_added = true;
     g_icon_data.uTimeoutOrVersion = api.NOTIFYICON_VERSION_4;
@@ -276,16 +295,53 @@ fn setTooltip(text: []const u8) void {
 fn updateTrayTooltip() void {
     if (!g_icon_added) return;
     g_icon_data.uFlags = api.NIF_TIP;
-    setTooltip(if (g_enabled) "SysInput - Enabled" else "SysInput - Paused");
+    setTooltip(tooltipText());
     _ = api.Shell_NotifyIconA(api.NIM_MODIFY, &g_icon_data);
+}
+
+fn tooltipText() []const u8 {
+    return trayTooltip(g_enabled, g_paused);
+}
+
+pub fn trayTooltip(enabled: bool, paused: bool) []const u8 {
+    if (paused) return "SysInput - Paused for 30 minutes";
+    return if (enabled) "SysInput - Enabled" else "SysInput - Disabled";
+}
+
+fn cancelPauseTimer() void {
+    if (!g_paused) return;
+    if (g_window) |window| _ = api.KillTimer(window, PAUSE_TIMER_ID);
+    g_paused = false;
 }
 
 fn toggleEnabled() void {
     const desired = !g_enabled;
     if (g_callbacks.set_enabled(desired)) {
+        cancelPauseTimer();
         g_enabled = desired;
+        g_paused = false;
         updateTrayTooltip();
     }
+}
+
+fn pauseForThirtyMinutes() void {
+    const window = g_window orelse return;
+    if (!g_enabled or !g_callbacks.pause_input()) return;
+    if (api.SetTimer(window, PAUSE_TIMER_ID, PAUSE_DURATION_MS, null) == 0) {
+        _ = g_callbacks.resume_input();
+        return;
+    }
+    g_enabled = false;
+    g_paused = true;
+    updateTrayTooltip();
+}
+
+fn resumeAfterPause() void {
+    if (!g_paused) return;
+    _ = api.KillTimer(g_window, PAUSE_TIMER_ID);
+    if (g_callbacks.resume_input()) g_enabled = true;
+    g_paused = false;
+    updateTrayTooltip();
 }
 
 fn showTrayMenu(hwnd: api.HWND) void {
@@ -296,10 +352,14 @@ fn showTrayMenu(hwnd: api.HWND) void {
     const enabled_flags: api.UINT = api.MF_STRING | if (g_enabled) @as(api.UINT, api.MF_CHECKED) else 0;
     _ = api.AppendMenuA(menu, enabled_flags, MENU_TOGGLE, "Predictions enabled");
     _ = api.AppendMenuA(menu, api.MF_STRING, MENU_SETTINGS, "Settings...");
+    const pause_flags: api.UINT = api.MF_STRING | if (g_enabled) 0 else @as(api.UINT, api.MF_GRAYED);
+    _ = api.AppendMenuA(menu, pause_flags, MENU_PAUSE, "Pause for 30 minutes");
     const exclude_flags: api.UINT = api.MF_STRING | if (g_last_external_foreground == null) @as(api.UINT, api.MF_GRAYED) else 0;
     _ = api.AppendMenuA(menu, exclude_flags, MENU_EXCLUDE_CURRENT, "Exclude current application");
+    _ = api.AppendMenuA(menu, api.MF_STRING | api.MF_GRAYED, MENU_FEEDBACK, "Feedback... (coming soon)");
     const startup_flags: api.UINT = api.MF_STRING | if (isStartupEnabled()) @as(api.UINT, api.MF_CHECKED) else 0;
     _ = api.AppendMenuA(menu, startup_flags, MENU_STARTUP, "Start with Windows");
+    _ = api.AppendMenuA(menu, api.MF_STRING, MENU_ABOUT, "About");
     _ = api.AppendMenuA(menu, api.MF_SEPARATOR, 0, null);
     _ = api.AppendMenuA(menu, api.MF_STRING, MENU_EXIT, "Exit");
 
@@ -320,12 +380,14 @@ fn showTrayMenu(hwnd: api.HWND) void {
     switch (command) {
         MENU_TOGGLE => toggleEnabled(),
         MENU_SETTINGS => g_callbacks.open_settings(),
+        MENU_PAUSE => pauseForThirtyMinutes(),
         MENU_EXCLUDE_CURRENT => _ = g_callbacks.exclude_window(g_last_external_foreground),
         MENU_STARTUP => {
             const desired = !isStartupEnabled();
             setStartupEnabled(g_allocator, desired, g_portable) catch return;
             g_callbacks.startup_changed(desired);
         },
+        MENU_ABOUT => g_callbacks.open_about(),
         MENU_EXIT => api.PostQuitMessage(0),
         else => {},
     }
@@ -351,6 +413,10 @@ fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: a
         },
         api.WM_CLOSE => {
             api.PostQuitMessage(0);
+            return 0;
+        },
+        api.WM_TIMER => {
+            if (w_param == PAUSE_TIMER_ID) resumeAfterPause();
             return 0;
         },
         else => return api.DefWindowProcA(hwnd, message, w_param, l_param),

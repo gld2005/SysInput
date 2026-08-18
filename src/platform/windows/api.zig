@@ -49,6 +49,7 @@ pub const WM_CLOSE = 0x0010;
 pub const WM_PAINT = 0x000F;
 pub const WM_ERASEBKGND = 0x0014;
 pub const WM_COMMAND = 0x0111;
+pub const WM_TIMER = 0x0113;
 pub const WM_SETTINGCHANGE = 0x001A;
 pub const WM_SETFONT = 0x0030;
 pub const WM_CONTEXTMENU = 0x007B;
@@ -156,7 +157,9 @@ pub const LBS_NOTIFY = 0x0001;
 pub const LB_ADDSTRING = 0x0180;
 pub const LB_RESETCONTENT = 0x0184;
 pub const LB_GETCURSEL = 0x0188;
+pub const LB_SETCURSEL = 0x0186;
 pub const LB_ERR: LRESULT = -1;
+pub const LBN_SELCHANGE = 1;
 pub const BN_CLICKED = 0;
 pub const CBN_SELCHANGE = 1;
 pub const CB_ADDSTRING = 0x0143;
@@ -561,6 +564,8 @@ pub extern "user32" fn SetWindowPos(
     cy: c_int,
     uFlags: UINT,
 ) callconv(.C) BOOL;
+pub extern "user32" fn SetTimer(hWnd: ?HWND, nIDEvent: usize, uElapse: UINT, lpTimerFunc: ?*const anyopaque) callconv(.C) usize;
+pub extern "user32" fn KillTimer(hWnd: ?HWND, uIDEvent: usize) callconv(.C) BOOL;
 
 pub extern "user32" fn InvalidateRect(
     hWnd: ?HWND,

@@ -17,7 +17,6 @@ const app_guard = sysinput.win32.app_guard;
 const settings_window = sysinput.ui.settings_window;
 const abbreviation_window = sysinput.ui.abbreviation_window;
 const corpus_window = sysinput.ui.corpus_window;
-const appearance_window = sysinput.ui.appearance_window;
 
 /// General Purpose Allocator for dynamic memory
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -34,6 +33,7 @@ fn setInputEnabled(enabled: bool) bool {
         if (runtime_store_ptr) |store| store.setAndSave(.enabled, true) catch |err| {
             debug.debugPrint("Failed to persist enabled setting: {}\n", .{err});
         };
+        lifecycle.syncEnabled(true);
         return true;
     }
 
@@ -46,6 +46,27 @@ fn setInputEnabled(enabled: bool) bool {
     if (runtime_store_ptr) |store| store.setAndSave(.enabled, false) catch |err| {
         debug.debugPrint("Failed to persist enabled setting: {}\n", .{err});
     };
+    lifecycle.syncEnabled(false);
+    return true;
+}
+
+fn pauseInput() bool {
+    if (keyboard.g_hook) |hook| {
+        if (win32.UnhookWindowsHookEx(hook) == 0) return false;
+        keyboard.g_hook = null;
+    }
+    manager.hideSuggestions();
+    buffer_controller.invalidatePhysicalInputState();
+    return true;
+}
+
+fn resumeInput() bool {
+    const store = runtime_store_ptr orelse return false;
+    if (!store.isEnabled(.enabled)) return false;
+    if (keyboard.g_hook == null) {
+        keyboard.g_hook = keyboard.setupKeyboardHook() catch return false;
+    }
+    buffer_controller.invalidatePhysicalInputState();
     return true;
 }
 
@@ -68,6 +89,10 @@ fn settingsChanged() void {
 
 fn openSettings() void {
     settings_window.show();
+}
+
+fn openAbout() void {
+    settings_window.showPage(.about);
 }
 
 fn addCurrentApplication() bool {
@@ -127,8 +152,6 @@ pub fn main() !void {
     defer abbreviation_window.deinit();
     try corpus_window.init(hInstance, manager.corpora());
     defer corpus_window.deinit();
-    try appearance_window.init(hInstance, &runtime_store, settingsChanged);
-    defer appearance_window.deinit();
 
     try settings_window.init(
         allocator,
@@ -179,7 +202,10 @@ pub fn main() !void {
             .set_enabled = setInputEnabled,
             .startup_changed = setStartupSetting,
             .open_settings = openSettings,
+            .open_about = openAbout,
             .exclude_window = excludeWindow,
+            .pause_input = pauseInput,
+            .resume_input = resumeInput,
         },
     );
     defer lifecycle.deinit();

@@ -416,6 +416,10 @@ fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
     defer allocator.free(portable_command);
     try expectEqualStrings("\"G:\\SysInput\\SysInput.exe\" --background --portable", portable_command);
 
+    try expectEqualStrings("SysInput - Enabled", lifecycle.trayTooltip(true, false));
+    try expectEqualStrings("SysInput - Disabled", lifecycle.trayTooltip(false, false));
+    try expectEqualStrings("SysInput - Paused for 30 minutes", lifecycle.trayTooltip(false, true));
+
     var first = (try lifecycle.SingleInstance.acquireNamed("Local\\SysInput.BaselineTest.SingleInstance")) orelse
         return error.BaselineTestFailed;
     defer first.deinit();
