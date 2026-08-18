@@ -16,6 +16,7 @@ const candidate_model = sysinput.suggestion.candidate;
 const prediction_worker = sysinput.suggestion.worker;
 const personal_profile = sysinput.text.personal_profile;
 const context_prediction = sysinput.text.context_prediction;
+const sentence_prediction = sysinput.text.sentence_prediction;
 const text_inject = sysinput.win32.text_inject;
 
 const CandidateTextStorage = struct {
@@ -35,6 +36,7 @@ pub var spell_checker: spellcheck.SpellChecker = undefined;
 /// Global autocompletion engine
 pub var autocomplete_engine: autocomplete.AutocompleteEngine = undefined;
 pub var context_model: context_prediction.ContextModel = undefined;
+pub var sentence_model: sentence_prediction.SentenceModel = undefined;
 
 /// List for storing word suggestions
 pub var suggestions: std.ArrayList([]const u8) = undefined;
@@ -54,8 +56,11 @@ var profile_store: personal_profile.ProfileStore = undefined;
 var profile_initialized = false;
 var context_profile_store: context_prediction.ContextProfileStore = undefined;
 var context_profile_initialized = false;
+var sentence_profile_store: sentence_prediction.SentenceProfileStore = undefined;
+var sentence_profile_initialized = false;
 var saved_profile_revision: u64 = 0;
 var saved_context_revision: u64 = 0;
+var saved_sentence_revision: u64 = 0;
 var last_profile_save_ms: i64 = 0;
 
 /// Global UI for autocompletion suggestions
@@ -83,6 +88,7 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
     // Initialize autocompletion engine
     autocomplete_engine = try autocomplete.AutocompleteEngine.init(allocator, &spell_checker.dictionary);
     context_model = try context_prediction.ContextModel.init(allocator);
+    sentence_model = sentence_prediction.SentenceModel.init(allocator);
 
     profile_store = try personal_profile.ProfileStore.initDefault(allocator);
     profile_initialized = true;
@@ -95,8 +101,14 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
     context_profile_store.load(&context_model) catch |err| {
         debug.debugPrint("Context profile ignored: {}\n", .{err});
     };
+    sentence_profile_store = try sentence_prediction.SentenceProfileStore.initDefault(allocator);
+    sentence_profile_initialized = true;
+    sentence_profile_store.load(&sentence_model) catch |err| {
+        debug.debugPrint("Sentence profile ignored: {}\n", .{err});
+    };
     saved_profile_revision = autocomplete_engine.revision;
     saved_context_revision = context_model.revision;
+    saved_sentence_revision = sentence_model.revision;
     last_profile_save_ms = std.time.milliTimestamp();
 
     // Initialize UI
@@ -119,6 +131,7 @@ pub fn computePrediction(
     const target_id: usize = if (request.target_window) |window| @intFromPtr(window) else 0;
     try autocomplete_engine.processTextSnapshot(target_id, request.textSlice());
     try context_model.processTextSnapshot(target_id, request.textSlice());
+    try sentence_model.processTextSnapshot(target_id, request.textSlice());
     autocomplete_engine.setCurrentWord(request.wordSlice());
     defer autocomplete_engine.setCurrentWord("");
 
@@ -144,6 +157,26 @@ pub fn computePrediction(
             confidence,
         );
         if (!result.addCandidate(&structured)) break;
+    }
+
+    if (request.word_len == 0 and result.candidate_count == 0) {
+        const sentence_predictions = sentence_model.predict();
+        for (sentence_predictions.slice()) |prediction| {
+            const text = prediction.textSlice();
+            var structured = try candidate_model.Candidate.init(
+                .sentence_completion,
+                .repeated_sentence,
+                text,
+                text,
+                0,
+                prediction.score,
+                prediction.confidence,
+            );
+            structured.chunk_count = prediction.chunk_count;
+            @memcpy(structured.chunks[0..prediction.chunk_count], prediction.chunks[0..prediction.chunk_count]);
+            if (!structured.isValid()) continue;
+            if (!result.addCandidate(&structured)) break;
+        }
     }
 
     if (request.word_len == 0 and result.candidate_count == 0) {
@@ -184,7 +217,10 @@ pub fn recordPredictionFeedback(
             if (feedback_kind == .shown) .shown else .accepted,
             text,
         ),
-        .sentence_completion => {},
+        .sentence_completion => sentence_model.recordFeedback(
+            if (feedback_kind == .shown) .shown else .accepted,
+            text,
+        ),
     }
 }
 
@@ -193,7 +229,8 @@ pub fn recordPredictionFeedback(
 pub fn maintainPersonalProfile(force: bool) !void {
     const personal_dirty = profile_initialized and autocomplete_engine.revision != saved_profile_revision;
     const context_dirty = context_profile_initialized and context_model.revision != saved_context_revision;
-    if (!personal_dirty and !context_dirty) return;
+    const sentence_dirty = sentence_profile_initialized and sentence_model.revision != saved_sentence_revision;
+    if (!personal_dirty and !context_dirty and !sentence_dirty) return;
     const now = std.time.milliTimestamp();
     if (!force and now - last_profile_save_ms < 60_000) return;
     if (personal_dirty) {
@@ -203,6 +240,10 @@ pub fn maintainPersonalProfile(force: bool) !void {
     if (context_dirty) {
         try context_profile_store.save(&context_model);
         saved_context_revision = context_model.revision;
+    }
+    if (sentence_dirty) {
+        try sentence_profile_store.save(&sentence_model);
+        saved_sentence_revision = sentence_model.revision;
     }
     last_profile_save_ms = now;
 }
@@ -710,6 +751,11 @@ pub fn acceptCurrentSuggestion() void {
     hideSuggestions();
 }
 
+pub fn canAcceptCurrentSuggestion() bool {
+    const candidate = getSelectedCandidate() orelse return false;
+    return candidate.kind != .sentence_completion;
+}
+
 fn acceptContextCandidate(candidate: *const candidate_model.Candidate) void {
     const current_word = buffer_controller.getCurrentWord() catch return;
     if (current_word.len != 0) {
@@ -829,6 +875,7 @@ pub fn deinit() void {
     spell_checker.deinit();
     autocomplete_engine.deinit();
     context_model.deinit();
+    sentence_model.deinit();
     if (profile_initialized) {
         profile_store.deinit();
         profile_initialized = false;
@@ -836,6 +883,10 @@ pub fn deinit() void {
     if (context_profile_initialized) {
         context_profile_store.deinit();
         context_profile_initialized = false;
+    }
+    if (sentence_profile_initialized) {
+        sentence_profile_store.deinit();
+        sentence_profile_initialized = false;
     }
     autocomplete_ui_manager.deinit();
 }

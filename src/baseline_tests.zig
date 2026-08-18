@@ -8,6 +8,7 @@ const dictionary = sysinput.text.dictionary;
 const autocomplete = sysinput.text.autocomplete;
 const personal_profile = sysinput.text.personal_profile;
 const context_prediction = sysinput.text.context_prediction;
+const sentence_prediction = sysinput.text.sentence_prediction;
 const edit_distance = sysinput.text.edit_distance;
 const insertion = sysinput.win32.insertion;
 const stats = sysinput.suggestion.stats;
@@ -504,6 +505,115 @@ fn testContextProfileRoundTrip(allocator: std.mem.Allocator) !void {
     try expect(context_prediction.decodeProfileInto(&rejected, damaged) == error.InvalidContextProfile);
 }
 
+fn feedSentenceSequence(
+    model: *sentence_prediction.SentenceModel,
+    target: usize,
+    sequence: []const u8,
+) !void {
+    var snapshot_storage: [512]u8 = undefined;
+    try expect(sequence.len <= snapshot_storage.len);
+    for (sequence, 0..) |character, index| {
+        snapshot_storage[index] = character;
+        try model.processTextSnapshot(target, snapshot_storage[0 .. index + 1]);
+    }
+}
+
+fn countWords(text: []const u8) usize {
+    var count: usize = 0;
+    var in_word = false;
+    for (text) |character| {
+        if (insertion.isWordChar(character)) {
+            if (!in_word) count += 1;
+            in_word = true;
+        } else {
+            in_word = false;
+        }
+    }
+    return count;
+}
+
+fn testRepeatedSentenceThresholdAndIgnore(allocator: std.mem.Allocator) !void {
+    var model = sentence_prediction.SentenceModel.init(allocator);
+    defer model.deinit();
+    try feedSentenceSequence(&model, 501, "I hope you meet Alice tomorrow.");
+    try model.processTextSnapshot(502, "i hope you ");
+    try expect(model.predict().count == 0);
+
+    try feedSentenceSequence(&model, 503, "i hope you meet Alice tomorrow!");
+    try model.processTextSnapshot(504, "i hope you ");
+    const predictions = model.predict();
+    try expect(predictions.count == 1);
+    try expectEqualStrings("meet Alice tomorrow", predictions.items[0].textSlice());
+    try expect(predictions.items[0].chunk_count == 1);
+    try expect(predictions.items[0].chunks[0].kind == .phrase);
+    for (0..6) |_| model.recordFeedback(.shown, predictions.items[0].textSlice());
+    try expect(model.predict().count == 0);
+}
+
+fn testSentencePredictionLimitAndChunks(allocator: std.mem.Allocator) !void {
+    const sentence = "one two three four five six, seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen.";
+    var model = sentence_prediction.SentenceModel.init(allocator);
+    defer model.deinit();
+    try feedSentenceSequence(&model, 511, sentence);
+    try feedSentenceSequence(&model, 512, sentence);
+    try model.processTextSnapshot(513, "one two three ");
+    const predictions = model.predict();
+    try expect(predictions.count == 1);
+    const prediction = predictions.items[0];
+    try expect(countWords(prediction.textSlice()) == sentence_prediction.MAX_PREDICTED_WORDS);
+    try expect(prediction.chunk_count >= 3);
+    var expected_start: usize = 0;
+    for (prediction.chunks[0..prediction.chunk_count]) |chunk| {
+        try expect(chunk.start == expected_start);
+        const chunk_text = prediction.textSlice()[chunk.start..chunk.end()];
+        try expect(countWords(chunk_text) >= 1);
+        try expect(countWords(chunk_text) <= 4);
+        expected_start = chunk.end();
+    }
+    try expect(expected_start == prediction.textSlice().len);
+    const comma = std.mem.indexOfScalar(u8, prediction.textSlice(), ',') orelse return error.BaselineTestFailed;
+    var punctuation_boundary = false;
+    for (prediction.chunks[0..prediction.chunk_count]) |chunk| {
+        if (chunk.end() == comma + 1) punctuation_boundary = true;
+    }
+    try expect(punctuation_boundary);
+}
+
+fn testSentenceProfileRoundTrip(allocator: std.mem.Allocator) !void {
+    var source = sentence_prediction.SentenceModel.init(allocator);
+    defer source.deinit();
+    try feedSentenceSequence(&source, 521, "we can review the final report tomorrow.");
+    try feedSentenceSequence(&source, 522, "We can review the final report tomorrow!");
+    const bytes = try sentence_prediction.encodeProfile(allocator, &source);
+    defer allocator.free(bytes);
+
+    var restored = sentence_prediction.SentenceModel.init(allocator);
+    defer restored.deinit();
+    try sentence_prediction.decodeProfileInto(&restored, bytes);
+    try restored.processTextSnapshot(523, "we can review ");
+    const predictions = restored.predict();
+    try expect(predictions.count == 1);
+    try expectEqualStrings("the final report tomorrow", predictions.items[0].textSlice());
+
+    const damaged = try allocator.dupe(u8, bytes);
+    defer allocator.free(damaged);
+    damaged[damaged.len - 1] ^= 0xff;
+    var rejected = sentence_prediction.SentenceModel.init(allocator);
+    defer rejected.deinit();
+    try expect(sentence_prediction.decodeProfileInto(&rejected, damaged) == error.InvalidSentenceProfile);
+}
+
+fn testSentenceRecordBound(allocator: std.mem.Allocator) !void {
+    var model = sentence_prediction.SentenceModel.init(allocator);
+    defer model.deinit();
+    var sentence_storage: [64]u8 = undefined;
+    for (0..sentence_prediction.MAX_SENTENCE_RECORDS + 1) |index| {
+        const sentence = try std.fmt.bufPrint(&sentence_storage, "alpha beta unique{d}.", .{index});
+        try feedSentenceSequence(&model, 600 + index, sentence);
+    }
+    try expect(model.recordCount() == sentence_prediction.MAX_SENTENCE_RECORDS);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -526,6 +636,10 @@ pub fn main() !void {
         .{ .name = "learned next word and feedback", .run = testLearnedNextWordAndFeedback },
         .{ .name = "low-confidence context suppression", .run = testLowConfidenceContextStaysHidden },
         .{ .name = "context profile round trip", .run = testContextProfileRoundTrip },
+        .{ .name = "repeated sentence threshold and ignore", .run = testRepeatedSentenceThresholdAndIgnore },
+        .{ .name = "sentence prediction limit and chunks", .run = testSentencePredictionLimitAndChunks },
+        .{ .name = "sentence profile round trip", .run = testSentenceProfileRoundTrip },
+        .{ .name = "sentence record bound", .run = testSentenceRecordBound },
         .{ .name = "lifecycle and startup contracts", .run = testLifecycleContracts },
     };
 
@@ -545,5 +659,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 21/21 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 25/25 checks passed\n");
 }

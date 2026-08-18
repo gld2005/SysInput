@@ -172,7 +172,13 @@ fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) ca
 
     if (manager.isSuggestionUIVisible()) {
         switch (suggestionKeyAction(kbd.vkCode)) {
-            .previous, .next, .accept => return processSuggestionNavigation(kbd),
+            .previous, .next => return processSuggestionNavigation(kbd),
+            .accept => {
+                if (manager.canAcceptCurrentSuggestion()) return processSuggestionNavigation(kbd);
+                // Sentence candidates are visible in Phase 8 but progressive
+                // acceptance belongs to Phase 9. Hide and pass the key through.
+                manager.hideSuggestions();
+            },
             .hide => {
                 manager.hideSuggestions();
                 return win32.CallNextHookEx(null, nCode, wParam, lParam);

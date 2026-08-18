@@ -5,6 +5,7 @@ pub const sysinput = @import("exports.zig");
 const dictionary = sysinput.text.dictionary;
 const autocomplete = sysinput.text.autocomplete;
 const context_prediction = sysinput.text.context_prediction;
+const sentence_prediction = sysinput.text.sentence_prediction;
 
 const PROCESS_MEMORY_COUNTERS = extern struct {
     cb: u32,
@@ -36,6 +37,15 @@ fn workingSetBytes() ?usize {
 fn freeSuggestionItems(allocator: std.mem.Allocator, suggestions: *std.ArrayList([]const u8)) void {
     for (suggestions.items) |item| allocator.free(item);
     suggestions.clearRetainingCapacity();
+}
+
+fn feedSentence(model: *sentence_prediction.SentenceModel, target: usize, text: []const u8) !void {
+    var storage: [512]u8 = undefined;
+    if (text.len > storage.len) return error.SentenceTooLong;
+    for (text, 0..) |character, index| {
+        storage[index] = character;
+        try model.processTextSnapshot(target, storage[0 .. index + 1]);
+    }
 }
 
 pub fn main() !void {
@@ -94,6 +104,21 @@ pub fn main() !void {
         context_max_ns = @max(context_max_ns, elapsed);
     }
 
+    var sentence_model = sentence_prediction.SentenceModel.init(allocator);
+    defer sentence_model.deinit();
+    try feedSentence(&sentence_model, 2, "we can review the final report tomorrow.");
+    try feedSentence(&sentence_model, 3, "we can review the final report tomorrow!");
+    try sentence_model.processTextSnapshot(4, "we can review ");
+    var sentence_total_ns: u64 = 0;
+    var sentence_max_ns: u64 = 0;
+    for (0..query_count) |_| {
+        timer.reset();
+        _ = sentence_model.predict();
+        const elapsed = timer.read();
+        sentence_total_ns += elapsed;
+        sentence_max_ns = @max(sentence_max_ns, elapsed);
+    }
+
     const stdout = std.io.getStdOut().writer();
     try stdout.print(
         \\SysInput prediction microbenchmark
@@ -107,6 +132,9 @@ pub fn main() !void {
         \\context_entries={d}
         \\context_query_avg_ms={d:.3}
         \\context_query_max_ms={d:.3}
+        \\repeated_sentences={d}
+        \\sentence_query_avg_ms={d:.3}
+        \\sentence_query_max_ms={d:.3}
         \\working_set_mib={d:.3}
         \\
     , .{
@@ -120,6 +148,9 @@ pub fn main() !void {
         context_model.transitionCount(),
         @as(f64, @floatFromInt(context_total_ns / query_count)) / std.time.ns_per_ms,
         @as(f64, @floatFromInt(context_max_ns)) / std.time.ns_per_ms,
+        sentence_model.repeatedRecordCount(),
+        @as(f64, @floatFromInt(sentence_total_ns / query_count)) / std.time.ns_per_ms,
+        @as(f64, @floatFromInt(sentence_max_ns)) / std.time.ns_per_ms,
         if (workingSetBytes()) |bytes|
             @as(f64, @floatFromInt(bytes)) / (1024.0 * 1024.0)
         else
