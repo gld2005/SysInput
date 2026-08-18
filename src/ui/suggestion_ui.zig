@@ -221,7 +221,6 @@ pub const AutocompleteUI = struct {
     pub fn acceptSuggestion(self: *AutocompleteUI) void {
         if (self.is_visible and self.current_suggestion != null and self.selection_callback != null) {
             self.selection_callback.?(self.current_suggestion.?);
-            self.hideSuggestions();
         }
     }
 

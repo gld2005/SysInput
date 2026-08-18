@@ -578,12 +578,8 @@ pub fn handleSuggestionSelection(suggestion: []const u8) void {
         debug.debugPrint("No structured candidate for UI selection: '{s}'\n", .{suggestion});
         return;
     };
-    if (candidate.kind == .next_word or candidate.kind == .phrase_completion) {
-        acceptContextCandidate(candidate);
-        return;
-    }
     if (candidate.kind != .word_completion) {
-        debug.debugPrint("Unsupported candidate kind {s}\n", .{@tagName(candidate.kind)});
+        acceptProgressiveCandidate(candidate, .chunk);
         return;
     }
 
@@ -604,19 +600,16 @@ pub fn handleSuggestionSelection(suggestion: []const u8) void {
             sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
         }
     }
+    hideSuggestions();
 }
 
 /// Accept the current suggestion
-pub fn acceptCurrentSuggestion() void {
+pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) void {
     if (!autocomplete_ui_manager.is_visible) return;
 
     const candidate = getSelectedCandidate() orelse return;
-    if (candidate.kind == .next_word or candidate.kind == .phrase_completion) {
-        acceptContextCandidate(candidate);
-        return;
-    }
     if (candidate.kind != .word_completion) {
-        debug.debugPrint("Unsupported candidate kind {s}\n", .{@tagName(candidate.kind)});
+        acceptProgressiveCandidate(candidate, mode);
         return;
     }
     const suggestion = candidate.insert_text;
@@ -751,12 +744,10 @@ pub fn acceptCurrentSuggestion() void {
     hideSuggestions();
 }
 
-pub fn canAcceptCurrentSuggestion() bool {
-    const candidate = getSelectedCandidate() orelse return false;
-    return candidate.kind != .sentence_completion;
-}
-
-fn acceptContextCandidate(candidate: *const candidate_model.Candidate) void {
+fn acceptProgressiveCandidate(
+    candidate: *const candidate_model.Candidate,
+    mode: candidate_model.AcceptanceMode,
+) void {
     const current_word = buffer_controller.getCurrentWord() catch return;
     if (current_word.len != 0) {
         debug.debugPrint("Context changed before candidate acceptance\n", .{});
@@ -768,15 +759,35 @@ fn acceptContextCandidate(candidate: *const candidate_model.Candidate) void {
         hideSuggestions();
         return;
     };
+    const acceptance = candidate.acceptance(mode) orelse {
+        hideSuggestions();
+        return;
+    };
+
+    var accepted_storage: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+    if (acceptance.text.len > accepted_storage.len) return;
+    @memcpy(accepted_storage[0..acceptance.text.len], acceptance.text);
+    const accepted = accepted_storage[0..acceptance.text.len];
+
+    const remaining_source = candidate.remainingAfter(acceptance);
+    var remaining_storage: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+    if (remaining_source.len > remaining_storage.len) return;
+    @memcpy(remaining_storage[0..remaining_source.len], remaining_source);
+    const remaining = remaining_storage[0..remaining_source.len];
+    const kind = candidate.kind;
+    const source = candidate.source;
+    const score = candidate.score;
+    const confidence = candidate.confidence;
+
     var payload: [config.TEXT.MAX_SUGGESTION_LEN + 1]u8 = undefined;
-    if (candidate.insert_text.len + 1 > payload.len) return;
-    @memcpy(payload[0..candidate.insert_text.len], candidate.insert_text);
-    payload[candidate.insert_text.len] = ' ';
-    const insertion_text = payload[0 .. candidate.insert_text.len + 1];
+    if (accepted.len + 1 > payload.len) return;
+    @memcpy(payload[0..accepted.len], accepted);
+    payload[accepted.len] = ' ';
+    const insertion_text = payload[0 .. accepted.len + 1];
 
     sysinput.suggestion.stats.recordInsertionAttempt(&stats_instance);
     if (!text_inject.insertTextAsSelection(target, insertion_text)) {
-        debug.debugPrint("Context insertion failed for '{s}'\n", .{candidate.insert_text});
+        debug.debugPrint("Progressive insertion failed for '{s}'\n", .{accepted});
         hideSuggestions();
         return;
     }
@@ -784,14 +795,60 @@ fn acceptContextCandidate(candidate: *const candidate_model.Candidate) void {
     buffer_controller.recordInjectedText(insertion_text) catch {
         buffer_controller.invalidatePhysicalInputState();
     };
-    prediction_worker.submitAcceptedCandidate(candidate.kind, candidate.insert_text);
+    prediction_worker.submitAcceptedCandidate(kind, accepted);
     sysinput.suggestion.stats.recordInsertionSuccess(&stats_instance);
     sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
-    hideSuggestions();
+
+    if (remaining.len == 0) {
+        hideSuggestions();
+    } else {
+        retainProgressiveRemainder(kind, source, score, confidence, remaining);
+    }
 
     const updated_text = buffer_controller.getCurrentText();
     const updated_word = buffer_controller.getCurrentWord() catch "";
     _ = prediction_worker.submitPrediction(updated_text, updated_word);
+}
+
+fn retainProgressiveRemainder(
+    kind: candidate_model.CandidateKind,
+    source: candidate_model.CandidateSource,
+    score: i32,
+    confidence: u16,
+    remaining: []const u8,
+) void {
+    clearSuggestions();
+    @memcpy(candidate_text_storage[0].display[0..remaining.len], remaining);
+    @memcpy(candidate_text_storage[0].insert[0..remaining.len], remaining);
+    var structured = candidate_model.Candidate.init(
+        kind,
+        source,
+        candidate_text_storage[0].display[0..remaining.len],
+        candidate_text_storage[0].insert[0..remaining.len],
+        0,
+        score,
+        confidence,
+    ) catch {
+        hideSuggestions();
+        return;
+    };
+    structured.chunk_count = candidate_model.buildCompletionChunks(structured.insert_text, &structured.chunks);
+    if (!structured.isValid() or structured.chunk_count == 0) {
+        hideSuggestions();
+        return;
+    }
+    autocomplete_candidates.appendAssumeCapacity(structured);
+    autocomplete_suggestions.appendAssumeCapacity(structured.display_text);
+
+    const current_text = buffer_controller.getCurrentText();
+    applied_text_len = @min(current_text.len, applied_text.len);
+    @memcpy(applied_text[0..applied_text_len], current_text[0..applied_text_len]);
+    applied_word_len = 0;
+    const caret = position.getCaretPosition();
+    showSuggestions(applied_text[0..applied_text_len], "", caret.x, caret.y) catch |err| {
+        debug.debugPrint("Failed to retain progressive remainder: {}\n", .{err});
+        hideSuggestions();
+    };
 }
 
 /// Hide suggestions UI

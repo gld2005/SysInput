@@ -15,7 +15,8 @@ var decoder = key_decoder.KeyboardDecoder{};
 pub const SuggestionKeyAction = enum {
     previous,
     next,
-    accept,
+    accept_chunk,
+    accept_word,
     hide,
     pass,
 };
@@ -24,7 +25,8 @@ pub fn suggestionKeyAction(virtual_key: api.DWORD) SuggestionKeyAction {
     return switch (virtual_key) {
         win32.VK_UP => .previous,
         win32.VK_DOWN => .next,
-        win32.VK_TAB, win32.VK_RIGHT => .accept,
+        win32.VK_TAB => .accept_chunk,
+        win32.VK_RIGHT => .accept_word,
         win32.VK_ESCAPE => .hide,
         else => .pass,
     };
@@ -56,7 +58,8 @@ fn processSuggestionNavigation(kbd: *const win32.KBDLLHOOKSTRUCT) win32.LRESULT 
     switch (suggestionKeyAction(kbd.vkCode)) {
         .previous => manager.navigateToPreviousSuggestion(),
         .next => manager.navigateToNextSuggestion(),
-        .accept => manager.acceptCurrentSuggestion(),
+        .accept_chunk => manager.acceptCurrentSuggestion(.chunk),
+        .accept_word => manager.acceptCurrentSuggestion(.word),
         else => return 0,
     }
     return 1;
@@ -173,12 +176,7 @@ fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) ca
     if (manager.isSuggestionUIVisible()) {
         switch (suggestionKeyAction(kbd.vkCode)) {
             .previous, .next => return processSuggestionNavigation(kbd),
-            .accept => {
-                if (manager.canAcceptCurrentSuggestion()) return processSuggestionNavigation(kbd);
-                // Sentence candidates are visible in Phase 8 but progressive
-                // acceptance belongs to Phase 9. Hide and pass the key through.
-                manager.hideSuggestions();
-            },
+            .accept_chunk, .accept_word => return processSuggestionNavigation(kbd),
             .hide => {
                 manager.hideSuggestions();
                 return win32.CallNextHookEx(null, nCode, wParam, lParam);

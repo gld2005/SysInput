@@ -152,7 +152,12 @@ pub const SentenceModel = struct {
     pub fn recordFeedback(self: *SentenceModel, kind: FeedbackKind, prediction_text: []const u8) void {
         const predictions = self.predict();
         for (predictions.slice()) |prediction| {
-            if (!std.mem.eql(u8, prediction.textSlice(), prediction_text)) continue;
+            const predicted = prediction.textSlice();
+            const matches = switch (kind) {
+                .shown => std.mem.eql(u8, predicted, prediction_text),
+                .accepted => isAcceptedPrefix(predicted, prediction_text),
+            };
+            if (!matches) continue;
             const record = &self.records.items[prediction.record_index];
             switch (kind) {
                 .shown => {
@@ -392,6 +397,12 @@ pub const SentenceModel = struct {
         if (self.usage_clock == 0) self.usage_clock = 1;
     }
 };
+
+fn isAcceptedPrefix(prediction: []const u8, accepted: []const u8) bool {
+    if (accepted.len == 0 or accepted.len > prediction.len) return false;
+    if (!std.mem.startsWith(u8, prediction, accepted)) return false;
+    return accepted.len == prediction.len or std.ascii.isWhitespace(prediction[accepted.len]);
+}
 
 const StoredRecord = struct {
     tokens: [MAX_SENTENCE_TOKENS][]const u8,

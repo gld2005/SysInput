@@ -190,6 +190,68 @@ fn testStructuredCandidates() !void {
     try expectEqualStrings(" if you", phrase.currentChunkText());
 }
 
+fn testProgressiveCandidateAcceptance() !void {
+    var word = try candidate_model.Candidate.wordCompletion(
+        "configuration",
+        4,
+        .dictionary,
+        10,
+        500,
+    );
+    try expectEqualStrings("configuration", word.acceptance(.chunk).?.text);
+    try expectEqualStrings("configuration", word.acceptance(.word).?.text);
+
+    var phrase = try candidate_model.Candidate.init(
+        .phrase_completion,
+        .learned_phrase,
+        "me know if you",
+        "me know if you",
+        0,
+        20,
+        800,
+    );
+    try phrase.addChunk(0, 7, .phrase);
+    try phrase.addChunk(7, 7, .phrase);
+    const phrase_chunk = phrase.acceptance(.chunk).?;
+    try expectEqualStrings("me know", phrase_chunk.text);
+    try expectEqualStrings("if you", phrase.remainingAfter(phrase_chunk));
+    const phrase_word = phrase.acceptance(.word).?;
+    try expectEqualStrings("me", phrase_word.text);
+    try expectEqualStrings("know if you", phrase.remainingAfter(phrase_word));
+
+    const sentence_text = "one two three four five six, seven eight";
+    var sentence = try candidate_model.Candidate.init(
+        .sentence_completion,
+        .repeated_sentence,
+        sentence_text,
+        sentence_text,
+        0,
+        30,
+        900,
+    );
+    sentence.chunk_count = candidate_model.buildCompletionChunks(sentence.insert_text, &sentence.chunks);
+    try expect(sentence.isValid());
+    try expectEqualStrings("one two three four", sentence.acceptance(.chunk).?.text);
+    try expectEqualStrings("one", sentence.acceptance(.word).?.text);
+    const accepted = sentence.acceptance(.chunk).?;
+    const remainder = sentence.remainingAfter(accepted);
+    try expectEqualStrings("five six, seven eight", remainder);
+
+    var rebuilt = try candidate_model.Candidate.init(
+        .sentence_completion,
+        .repeated_sentence,
+        remainder,
+        remainder,
+        0,
+        30,
+        900,
+    );
+    rebuilt.chunk_count = candidate_model.buildCompletionChunks(rebuilt.insert_text, &rebuilt.chunks);
+    try expect(rebuilt.isValid());
+    try expectEqualStrings("five six,", rebuilt.acceptance(.chunk).?.text);
+    try expectEqualStrings("five", rebuilt.acceptance(.word).?.text);
+}
+
 fn testPredictionWorker() !void {
     var request = prediction_worker.PredictionRequest{};
     request.set(42, "hello world", "wor");
@@ -266,8 +328,8 @@ fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
 
     try expect(keyboard.suggestionKeyAction(api.VK_ESCAPE) == .hide);
     try expect(keyboard.suggestionKeyAction(api.VK_RETURN) == .pass);
-    try expect(keyboard.suggestionKeyAction(api.VK_TAB) == .accept);
-    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT) == .accept);
+    try expect(keyboard.suggestionKeyAction(api.VK_TAB) == .accept_chunk);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT) == .accept_word);
 }
 
 fn testEditDistance() !void {
@@ -452,6 +514,18 @@ fn testSeededContextPhrase(allocator: std.mem.Allocator) !void {
     try expect(model.predict().count == 0);
 }
 
+fn testContextPartialPhraseFeedback(allocator: std.mem.Allocator) !void {
+    var model = try context_prediction.ContextModel.init(allocator);
+    defer model.deinit();
+    try model.processTextSnapshot(102, "please let ");
+    const predictions = model.predict();
+    try expect(predictions.count > 0);
+    try expect(predictions.items[0].kind == .phrase_completion);
+    const revision = model.revision;
+    model.recordFeedback(.accepted, "me");
+    try expect(model.revision == revision +% 1);
+}
+
 fn testLearnedNextWordAndFeedback(allocator: std.mem.Allocator) !void {
     var model = try context_prediction.ContextModel.init(allocator);
     defer model.deinit();
@@ -550,6 +624,26 @@ fn testRepeatedSentenceThresholdAndIgnore(allocator: std.mem.Allocator) !void {
     try expect(model.predict().count == 0);
 }
 
+fn testSentencePartialAcceptanceFeedback(allocator: std.mem.Allocator) !void {
+    var model = sentence_prediction.SentenceModel.init(allocator);
+    defer model.deinit();
+    try feedSentenceSequence(&model, 505, "I hope you meet Alice tomorrow.");
+    try feedSentenceSequence(&model, 506, "i hope you meet Alice tomorrow!");
+    try model.processTextSnapshot(507, "i hope you ");
+    const before = model.predict();
+    try expect(before.count == 1);
+    const revision = model.revision;
+    model.recordFeedback(.accepted, "meet");
+    try expect(model.revision == revision +% 1);
+    const after = model.predict();
+    try expect(after.count == 1);
+    try expect(after.items[0].score > before.items[0].score);
+
+    const accepted_revision = model.revision;
+    model.recordFeedback(.accepted, "mee");
+    try expect(model.revision == accepted_revision);
+}
+
 fn testSentencePredictionLimitAndChunks(allocator: std.mem.Allocator) !void {
     const sentence = "one two three four five six, seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen.";
     var model = sentence_prediction.SentenceModel.init(allocator);
@@ -633,10 +727,12 @@ pub fn main() !void {
         .{ .name = "profile round trip and corrupt fallback", .run = testProfileRoundTripAndCorruption },
         .{ .name = "personal vocabulary bound", .run = testPersonalVocabularyBound },
         .{ .name = "seeded context phrase", .run = testSeededContextPhrase },
+        .{ .name = "context partial phrase feedback", .run = testContextPartialPhraseFeedback },
         .{ .name = "learned next word and feedback", .run = testLearnedNextWordAndFeedback },
         .{ .name = "low-confidence context suppression", .run = testLowConfidenceContextStaysHidden },
         .{ .name = "context profile round trip", .run = testContextProfileRoundTrip },
         .{ .name = "repeated sentence threshold and ignore", .run = testRepeatedSentenceThresholdAndIgnore },
+        .{ .name = "sentence partial acceptance feedback", .run = testSentencePartialAcceptanceFeedback },
         .{ .name = "sentence prediction limit and chunks", .run = testSentencePredictionLimitAndChunks },
         .{ .name = "sentence profile round trip", .run = testSentenceProfileRoundTrip },
         .{ .name = "sentence record bound", .run = testSentenceRecordBound },
@@ -647,6 +743,7 @@ pub fn main() !void {
     try testKeyboardEventClassification();
     try testActiveLayoutTranslation();
     try testStructuredCandidates();
+    try testProgressiveCandidateAcceptance();
     try testPredictionWorker();
     try testEditDistance();
     try testStatistics();
@@ -659,5 +756,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 25/25 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 28/28 checks passed\n");
 }

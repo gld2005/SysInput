@@ -6,6 +6,7 @@ const dictionary = sysinput.text.dictionary;
 const autocomplete = sysinput.text.autocomplete;
 const context_prediction = sysinput.text.context_prediction;
 const sentence_prediction = sysinput.text.sentence_prediction;
+const candidate_model = sysinput.suggestion.candidate;
 
 const PROCESS_MEMORY_COUNTERS = extern struct {
     cb: u32,
@@ -119,6 +120,26 @@ pub fn main() !void {
         sentence_max_ns = @max(sentence_max_ns, elapsed);
     }
 
+    const completion_text = "the final report, and send it to the project team tomorrow";
+    var progressive = try candidate_model.Candidate.init(
+        .sentence_completion,
+        .repeated_sentence,
+        completion_text,
+        completion_text,
+        0,
+        100,
+        900,
+    );
+    progressive.chunk_count = candidate_model.buildCompletionChunks(progressive.insert_text, &progressive.chunks);
+    const acceptance_queries: usize = 100_000;
+    var acceptance_checksum: usize = 0;
+    timer.reset();
+    for (0..acceptance_queries) |index| {
+        const accepted = progressive.acceptance(if (index % 2 == 0) .chunk else .word).?;
+        acceptance_checksum +%= accepted.text.len + progressive.remainingAfter(accepted).len;
+    }
+    const acceptance_ns = timer.read();
+
     const stdout = std.io.getStdOut().writer();
     try stdout.print(
         \\SysInput prediction microbenchmark
@@ -135,6 +156,9 @@ pub fn main() !void {
         \\repeated_sentences={d}
         \\sentence_query_avg_ms={d:.3}
         \\sentence_query_max_ms={d:.3}
+        \\acceptance_queries={d}
+        \\acceptance_avg_us={d:.3}
+        \\acceptance_checksum={d}
         \\working_set_mib={d:.3}
         \\
     , .{
@@ -151,6 +175,9 @@ pub fn main() !void {
         sentence_model.repeatedRecordCount(),
         @as(f64, @floatFromInt(sentence_total_ns / query_count)) / std.time.ns_per_ms,
         @as(f64, @floatFromInt(sentence_max_ns)) / std.time.ns_per_ms,
+        acceptance_queries,
+        @as(f64, @floatFromInt(acceptance_ns / acceptance_queries)) / std.time.ns_per_us,
+        acceptance_checksum,
         if (workingSetBytes()) |bytes|
             @as(f64, @floatFromInt(bytes)) / (1024.0 * 1024.0)
         else
