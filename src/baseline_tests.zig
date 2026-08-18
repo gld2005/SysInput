@@ -21,6 +21,8 @@ const lifecycle = sysinput.win32.lifecycle;
 const keyboard = sysinput.input.keyboard;
 const runtime_settings = sysinput.core.runtime_settings;
 const data_paths = sysinput.core.data_paths;
+const application_exclusions = sysinput.core.application_exclusions;
+const app_guard = sysinput.win32.app_guard;
 
 var worker_test_mutex = std.Thread.Mutex{};
 var worker_test_learned = false;
@@ -469,6 +471,77 @@ fn testLearningCanBeDisabled(allocator: std.mem.Allocator) !void {
     try expect(sentence.revision == 0);
 }
 
+fn testApplicationExclusions(allocator: std.mem.Allocator) !void {
+    var normalized_storage: [application_exclusions.MAX_PATH_BYTES]u8 = undefined;
+    const normalized = application_exclusions.normalizePath(
+        "  \"C:/Program Files/Example/App.EXE\"  ",
+        &normalized_storage,
+    ) orelse return error.BaselineTestFailed;
+    try expectEqualStrings("c:\\program files\\example\\app.exe", normalized);
+    try expect(application_exclusions.normalizePath("C:\\notes.txt", &normalized_storage) == null);
+
+    const root = try phase10TempRoot(allocator, "exclusions");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    const initialized = try application_exclusions.Store.initAt(allocator, root);
+    var store = initialized.store;
+    defer store.deinit();
+    try expect(initialized.status == .missing);
+    try expect(try store.add("C:\\Program Files\\Example\\App.exe"));
+    try expect(!(try store.add("c:/program files/example/app.EXE")));
+    try expect(store.contains("C:\\PROGRAM FILES\\EXAMPLE\\APP.EXE"));
+    var entries: [application_exclusions.MAX_ENTRIES]application_exclusions.Entry = undefined;
+    try expect(store.copyEntries(&entries) == 1);
+    try store.setEnabled(0, false);
+    try expect(!store.contains("C:\\Program Files\\Example\\App.exe"));
+
+    const reloaded_result = try application_exclusions.Store.initAt(allocator, root);
+    var reloaded = reloaded_result.store;
+    defer reloaded.deinit();
+    try expect(reloaded_result.status == .loaded);
+    try expect(reloaded.copyEntries(&entries) == 1 and !entries[0].enabled);
+    try reloaded.remove(0);
+    try expect(reloaded.copyEntries(&entries) == 0);
+
+    var corrupt_file = try std.fs.cwd().createFile(reloaded.path, .{ .truncate = true });
+    try corrupt_file.writeAll("invalid");
+    corrupt_file.close();
+    const corrupt_result = try application_exclusions.Store.initAt(allocator, root);
+    var fallback = corrupt_result.store;
+    defer fallback.deinit();
+    try expect(corrupt_result.status == .corrupt);
+    try expect(fallback.copyEntries(&entries) == 0);
+}
+
+fn testApplicationGuard(allocator: std.mem.Allocator) !void {
+    const root = try phase10TempRoot(allocator, "guard");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    const initialized = try application_exclusions.Store.initAt(allocator, root);
+    var store = initialized.store;
+    defer store.deinit();
+    app_guard.init(&store);
+    defer app_guard.deinit();
+    const foreground = api.GetForegroundWindow();
+    const result = app_guard.evaluate(foreground);
+    var guard_samples: [64]u64 = undefined;
+    for (&guard_samples) |*sample| {
+        var timer = try std.time.Timer.start();
+        _ = app_guard.evaluate(foreground);
+        sample.* = timer.read();
+    }
+    std.sort.heap(u64, &guard_samples, {}, std.sort.asc(u64));
+    const guard_p95 = guard_samples[60];
+    std.debug.print("Application guard P95: {d:.3} ms\n", .{@as(f64, @floatFromInt(guard_p95)) / std.time.ns_per_ms});
+    try expect(guard_p95 < 20 * std.time.ns_per_ms);
+    if (result.decision == .allowed) {
+        try expect(result.path_len > 4);
+        try expect(std.ascii.endsWithIgnoreCase(result.pathSlice(), ".exe"));
+        _ = try store.add(result.pathSlice());
+        try expect(app_guard.evaluate(foreground).decision == .excluded);
+    }
+}
+
 fn testCandidateLease() !void {
     var lease = lease_model.Lease{};
     try expect(!lease.matches(1, 10, 20, 30, true, 40, 50));
@@ -896,6 +969,8 @@ pub fn main() !void {
         .{ .name = "runtime settings persistence and fallback", .run = testRuntimeSettings },
         .{ .name = "data paths and non-destructive migration", .run = testDataPathsAndMigration },
         .{ .name = "personal learning can be disabled", .run = testLearningCanBeDisabled },
+        .{ .name = "application exclusion persistence", .run = testApplicationExclusions },
+        .{ .name = "application guard safety", .run = testApplicationGuard },
     };
 
     try testWordCharacters();
@@ -917,5 +992,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 33/33 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 35/35 checks passed\n");
 }

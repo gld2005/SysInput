@@ -5,6 +5,7 @@ pub const core = struct {
     pub const buffer_controller = @import("core/buffer_controller.zig");
     pub const data_paths = @import("core/data_paths.zig");
     pub const runtime_settings = @import("core/runtime_settings.zig");
+    pub const application_exclusions = @import("core/application_exclusions.zig");
 };
 
 pub const input = struct {
@@ -36,6 +37,7 @@ pub const ui = struct {
     pub const position = @import("ui/position.zig");
     pub const suggestion_ui = @import("ui/suggestion_ui.zig");
     pub const window = @import("ui/window.zig");
+    pub const settings_window = @import("ui/settings_window.zig");
 };
 
 pub const win32 = platform.windows;
@@ -46,6 +48,7 @@ pub const platform = struct {
         pub const text_inject = @import("platform/windows/text_inject.zig");
         pub const insertion = @import("platform/windows/insertion.zig");
         pub const lifecycle = @import("platform/windows/lifecycle.zig");
+        pub const app_guard = @import("platform/windows/app_guard.zig");
     };
 };
 

@@ -47,6 +47,7 @@ pub const WM_CLOSE = 0x0010;
 pub const WM_PAINT = 0x000F;
 pub const WM_ERASEBKGND = 0x0014;
 pub const WM_COMMAND = 0x0111;
+pub const WM_SETFONT = 0x0030;
 pub const WM_CONTEXTMENU = 0x007B;
 pub const WM_NULL = 0x0000;
 pub const WM_USER = 0x0400;
@@ -59,6 +60,7 @@ pub const WM_CHAR = 0x0102;
 pub const WM_SYSKEYDOWN = 0x0104;
 pub const WM_SYSKEYUP = 0x0105;
 pub const WM_LBUTTONDOWN = 0x0201;
+pub const WM_LBUTTONUP = 0x0202;
 pub const WM_LBUTTONDBLCLK = 0x0203;
 pub const WM_RBUTTONUP = 0x0205;
 
@@ -130,12 +132,36 @@ pub const SWP_SHOWWINDOW = 0x0040;
 pub const WS_POPUP = 0x80000000;
 pub const WS_BORDER = 0x00800000;
 pub const WS_CAPTION = 0x00C00000;
+pub const WS_CHILD = 0x40000000;
+pub const WS_VISIBLE = 0x10000000;
+pub const WS_TABSTOP = 0x00010000;
+pub const WS_GROUP = 0x00020000;
+pub const WS_OVERLAPPEDWINDOW = 0x00CF0000;
+pub const WS_VSCROLL = 0x00200000;
+pub const WS_EX_CLIENTEDGE = 0x00000200;
+pub const WS_EX_APPWINDOW = 0x00040000;
+pub const CW_USEDEFAULT: c_int = -2147483648;
+pub const BS_PUSHBUTTON = 0x00000000;
+pub const BS_AUTOCHECKBOX = 0x00000003;
+pub const BS_GROUPBOX = 0x00000007;
+pub const BST_UNCHECKED = 0;
+pub const BST_CHECKED = 1;
+pub const BM_GETCHECK = 0x00F0;
+pub const BM_SETCHECK = 0x00F1;
+pub const LBS_NOTIFY = 0x0001;
+pub const LB_ADDSTRING = 0x0180;
+pub const LB_RESETCONTENT = 0x0184;
+pub const LB_GETCURSEL = 0x0188;
+pub const LB_ERR: LRESULT = -1;
+pub const BN_CLICKED = 0;
 pub const WS_EX_TOPMOST = 0x00000008;
 pub const WS_EX_TOOLWINDOW = 0x00000080;
 pub const WS_EX_NOACTIVATE = 0x08000000;
 pub const WS_EX_LAYERED = 0x00080000;
 pub const WS_EX_TRANSPARENT = 0x00000020;
 pub const GWL_EXSTYLE = -20;
+pub const GWL_STYLE = -16;
+pub const ES_PASSWORD: usize = 0x0020;
 pub const CS_DROPSHADOW = 0x00020000;
 
 // Window display commands
@@ -173,6 +199,7 @@ pub const FF_DONTCARE = 0;
 
 // Stock object constants
 pub const WHITE_BRUSH = 0;
+pub const DEFAULT_GUI_FONT = 17;
 pub const LTGRAY_BRUSH = 1;
 pub const GRAY_BRUSH = 2;
 pub const DKGRAY_BRUSH = 3;
@@ -190,6 +217,7 @@ pub const IDI_APPLICATION = 32512;
 pub const MF_STRING = 0x00000000;
 pub const MF_SEPARATOR = 0x00000800;
 pub const MF_CHECKED = 0x00000008;
+pub const MF_GRAYED = 0x00000001;
 pub const TPM_RIGHTBUTTON = 0x0002;
 pub const TPM_RETURNCMD = 0x0100;
 
@@ -212,6 +240,9 @@ pub const REG_DWORD = 4;
 pub const KEY_QUERY_VALUE = 0x0001;
 pub const KEY_SET_VALUE = 0x0002;
 pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
+pub const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+pub const TOKEN_QUERY = 0x0008;
+pub const TokenIntegrityLevel = 25;
 
 // Layered window constants
 pub const LWA_ALPHA = 0x00000002;
@@ -341,6 +372,49 @@ pub const GUID = extern struct {
     Data3: u16,
     Data4: [8]u8,
 };
+pub const HRESULT = i32;
+pub const CLSCTX_INPROC_SERVER = 0x1;
+pub const COINIT_MULTITHREADED = 0x0;
+pub const VT_BOOL: u16 = 11;
+
+pub const SID_AND_ATTRIBUTES = extern struct {
+    Sid: *anyopaque,
+    Attributes: DWORD,
+};
+
+pub const TOKEN_MANDATORY_LABEL = extern struct {
+    Label: SID_AND_ATTRIBUTES,
+};
+
+pub const OPENFILENAMEA = extern struct {
+    lStructSize: DWORD,
+    hwndOwner: ?HWND,
+    hInstance: ?HINSTANCE,
+    lpstrFilter: ?[*:0]const u8,
+    lpstrCustomFilter: ?[*:0]u8,
+    nMaxCustFilter: DWORD,
+    nFilterIndex: DWORD,
+    lpstrFile: [*:0]u8,
+    nMaxFile: DWORD,
+    lpstrFileTitle: ?[*:0]u8,
+    nMaxFileTitle: DWORD,
+    lpstrInitialDir: ?[*:0]const u8,
+    lpstrTitle: ?[*:0]const u8,
+    Flags: DWORD,
+    nFileOffset: WORD,
+    nFileExtension: WORD,
+    lpstrDefExt: ?[*:0]const u8,
+    lCustData: LPARAM,
+    lpfnHook: ?*anyopaque,
+    lpTemplateName: ?[*:0]const u8,
+    pvReserved: ?*anyopaque,
+    dwReserved: DWORD,
+    FlagsEx: DWORD,
+};
+
+pub const OFN_FILEMUSTEXIST = 0x00001000;
+pub const OFN_PATHMUSTEXIST = 0x00000800;
+pub const OFN_NOCHANGEDIR = 0x00000008;
 
 pub const NOTIFYICONDATAA = extern struct {
     cbSize: DWORD,
@@ -395,6 +469,10 @@ pub extern "user32" fn ShowWindow(
     hWnd: HWND,
     nCmdShow: c_int,
 ) callconv(.C) BOOL;
+
+pub extern "user32" fn EnableWindow(hWnd: HWND, bEnable: BOOL) callconv(.C) BOOL;
+pub extern "user32" fn IsWindowVisible(hWnd: HWND) callconv(.C) BOOL;
+pub extern "user32" fn SetWindowTextA(hWnd: HWND, lpString: [*:0]const u8) callconv(.C) BOOL;
 
 pub extern "user32" fn UpdateWindow(
     hWnd: HWND,
@@ -474,6 +552,7 @@ pub extern "user32" fn FindWindowExA(
 pub extern "user32" fn GetForegroundWindow() callconv(.C) ?HWND;
 pub extern "user32" fn GetClassNameA(hWnd: ?HWND, lpClassName: [*:0]u8, nMaxCount: c_int) callconv(.C) c_int;
 pub extern "user32" fn GetFocus() callconv(.C) ?HWND;
+pub extern "user32" fn GetWindowLongPtrA(hWnd: HWND, nIndex: c_int) callconv(.C) isize;
 
 pub extern "user32" fn SendMessageA(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.C) LRESULT;
 pub extern "user32" fn PostMessageA(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.C) BOOL;
@@ -541,6 +620,10 @@ pub extern "user32" fn LoadCursorA(
 pub extern "user32" fn LoadIconA(hInstance: ?HINSTANCE, lpIconName: [*:0]const u8) callconv(.C) ?HICON;
 
 pub extern "shell32" fn Shell_NotifyIconA(dwMessage: DWORD, lpData: *NOTIFYICONDATAA) callconv(.C) BOOL;
+pub extern "comdlg32" fn GetOpenFileNameA(param: *OPENFILENAMEA) callconv(.C) BOOL;
+pub extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: DWORD) callconv(.C) HRESULT;
+pub extern "ole32" fn CoCreateInstance(rclsid: *const GUID, pUnkOuter: ?*anyopaque, dwClsContext: DWORD, riid: *const GUID, ppv: **anyopaque) callconv(.C) HRESULT;
+pub extern "oleaut32" fn VariantClear(pvarg: *anyopaque) callconv(.C) HRESULT;
 
 // Thread and process info
 pub extern "user32" fn GetWindowThreadProcessId(
@@ -676,6 +759,10 @@ pub extern "user32" fn GetSystemMetrics(
 // Miscellaneous utility functions
 pub extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.C) void;
 pub extern "kernel32" fn GetCurrentThreadId() callconv(.C) DWORD;
+pub extern "kernel32" fn GetCurrentProcessId() callconv(.C) DWORD;
+pub extern "kernel32" fn GetCurrentProcess() callconv(.C) HANDLE;
+pub extern "kernel32" fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) callconv(.C) ?HANDLE;
+pub extern "kernel32" fn QueryFullProcessImageNameA(hProcess: HANDLE, dwFlags: DWORD, lpExeName: [*]u8, lpdwSize: *DWORD) callconv(.C) BOOL;
 pub extern "kernel32" fn lstrlenA(lpString: ?*const anyopaque) callconv(.C) c_int;
 pub extern "kernel32" fn CreateMutexA(lpMutexAttributes: ?*anyopaque, bInitialOwner: BOOL, lpName: [*:0]const u8) callconv(.C) ?HANDLE;
 pub extern "kernel32" fn GetLastError() callconv(.C) DWORD;
@@ -697,6 +784,10 @@ pub extern "advapi32" fn RegSetValueExA(hKey: HKEY, lpValueName: [*:0]const u8, 
 pub extern "advapi32" fn RegQueryValueExA(hKey: HKEY, lpValueName: [*:0]const u8, lpReserved: ?*DWORD, lpType: ?*DWORD, lpData: ?[*]u8, lpcbData: ?*DWORD) callconv(.C) LONG;
 pub extern "advapi32" fn RegDeleteValueA(hKey: HKEY, lpValueName: [*:0]const u8) callconv(.C) LONG;
 pub extern "advapi32" fn RegCloseKey(hKey: HKEY) callconv(.C) LONG;
+pub extern "advapi32" fn OpenProcessToken(ProcessHandle: HANDLE, DesiredAccess: DWORD, TokenHandle: *HANDLE) callconv(.C) BOOL;
+pub extern "advapi32" fn GetTokenInformation(TokenHandle: HANDLE, TokenInformationClass: c_int, TokenInformation: *anyopaque, TokenInformationLength: DWORD, ReturnLength: *DWORD) callconv(.C) BOOL;
+pub extern "advapi32" fn GetSidSubAuthorityCount(pSid: *anyopaque) callconv(.C) ?*u8;
+pub extern "advapi32" fn GetSidSubAuthority(pSid: *anyopaque, nSubAuthority: DWORD) callconv(.C) ?*DWORD;
 
 // Helper functions
 pub inline fn makeIntResource(id: u16) [*:0]const u8 {

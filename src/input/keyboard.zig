@@ -11,6 +11,7 @@ const prediction_worker = sysinput.suggestion.worker;
 
 pub var g_hook: ?win32.HHOOK = null;
 var decoder = key_decoder.KeyboardDecoder{};
+var last_foreground_window: ?api.HWND = null;
 
 pub const SuggestionKeyAction = enum {
     previous,
@@ -192,6 +193,13 @@ fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) ca
         }
     }
     if (!down) return win32.CallNextHookEx(null, nCode, wParam, lParam);
+
+    const foreground = api.GetForegroundWindow();
+    if (foreground != last_foreground_window) {
+        last_foreground_window = foreground;
+        manager.hideSuggestions();
+        buffer_controller.invalidatePhysicalInputState();
+    }
 
     if (manager.isSuggestionUIVisible()) {
         switch (suggestionKeyAction(kbd.vkCode, decoder.modifiers, manager.runtimeSetting(.safe_arrow_mode))) {

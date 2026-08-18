@@ -21,6 +21,7 @@ const sentence_prediction = sysinput.text.sentence_prediction;
 const text_inject = sysinput.win32.text_inject;
 const suggestion_window = sysinput.ui.window;
 const runtime_settings = sysinput.core.runtime_settings;
+const app_guard = sysinput.win32.app_guard;
 
 const CandidateTextStorage = struct {
     display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
@@ -186,6 +187,7 @@ pub fn computePrediction(
     request: *const prediction_worker.PredictionRequest,
     result: *prediction_worker.PredictionResult,
 ) !void {
+    if (app_guard.evaluate(request.target_window).decision != .allowed) return;
     const settings = settings_store.snapshot();
     const target_id: usize = if (request.target_window) |window| @intFromPtr(window) else 0;
     try autocomplete_engine.processTextSnapshotWithLearning(target_id, request.textSlice(), settings.personal_learning);

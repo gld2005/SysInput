@@ -12,10 +12,15 @@ const edit_distance = sysinput.text.edit_distance;
 const lifecycle = sysinput.win32.lifecycle;
 const data_paths = sysinput.core.data_paths;
 const runtime_settings = sysinput.core.runtime_settings;
+const application_exclusions = sysinput.core.application_exclusions;
+const app_guard = sysinput.win32.app_guard;
+const settings_window = sysinput.ui.settings_window;
 
 /// General Purpose Allocator for dynamic memory
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var runtime_store_ptr: ?*runtime_settings.Store = null;
+var application_allocator: std.mem.Allocator = undefined;
+var portable_mode = false;
 
 fn setInputEnabled(enabled: bool) bool {
     if (enabled) {
@@ -45,14 +50,46 @@ fn setStartupSetting(enabled: bool) void {
     if (runtime_store_ptr) |store| store.setAndSave(.start_with_windows, enabled) catch {};
 }
 
+fn setStartupFromSettings(enabled: bool) bool {
+    lifecycle.setStartupEnabled(application_allocator, enabled, portable_mode) catch return false;
+    setStartupSetting(enabled);
+    return true;
+}
+
+fn settingsChanged() void {
+    app_guard.invalidateCache();
+    manager.hideSuggestions();
+    buffer_controller.invalidatePhysicalInputState();
+}
+
+fn openSettings() void {
+    settings_window.show();
+}
+
+fn addCurrentApplication() bool {
+    _ = app_guard.addWindow(lifecycle.lastExternalWindow()) catch return false;
+    settingsChanged();
+    settings_window.refreshApplications();
+    return true;
+}
+
+fn excludeWindow(window: ?sysinput.win32.api.HWND) bool {
+    _ = app_guard.addWindow(window) catch return false;
+    settingsChanged();
+    settings_window.refreshApplications();
+    return true;
+}
+
 pub fn main() !void {
     // Initialize memory allocator
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    application_allocator = allocator;
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     const options = lifecycle.Options.parse(args);
+    portable_mode = options.portable;
 
     var single_instance = (try lifecycle.SingleInstance.acquire()) orelse return;
     defer single_instance.deinit();
@@ -65,6 +102,12 @@ pub fn main() !void {
     runtime_store_ptr = &runtime_store;
     defer runtime_store_ptr = null;
     if (settings_result.status != .loaded) runtime_store.save() catch {};
+    const exclusions_result = try application_exclusions.Store.initAt(allocator, paths.root);
+    var exclusion_store = exclusions_result.store;
+    defer exclusion_store.deinit();
+    if (exclusions_result.status != .loaded) exclusion_store.save() catch {};
+    app_guard.init(&exclusion_store);
+    defer app_guard.deinit();
 
     // Initialize buffer controller
     try buffer_controller.init(allocator);
@@ -75,6 +118,20 @@ pub fn main() !void {
     // Initialize suggestion handler
     try manager.init(allocator, hInstance, paths.profiles, &runtime_store);
     defer manager.deinit();
+
+    try settings_window.init(
+        allocator,
+        hInstance,
+        &runtime_store,
+        &exclusion_store,
+        .{
+            .set_enabled = setInputEnabled,
+            .set_startup = setStartupFromSettings,
+            .settings_changed = settingsChanged,
+            .add_current_application = addCurrentApplication,
+        },
+    );
+    defer settings_window.deinit();
 
     // Start the bounded prediction worker before the hook begins submitting
     // snapshots. Registered after manager so it is stopped first on shutdown.
@@ -107,7 +164,12 @@ pub fn main() !void {
         hInstance,
         options,
         runtime_store.isEnabled(.enabled),
-        .{ .set_enabled = setInputEnabled, .startup_changed = setStartupSetting },
+        .{
+            .set_enabled = setInputEnabled,
+            .startup_changed = setStartupSetting,
+            .open_settings = openSettings,
+            .exclude_window = excludeWindow,
+        },
     );
     defer lifecycle.deinit();
 

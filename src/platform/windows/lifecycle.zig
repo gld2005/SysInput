@@ -17,6 +17,8 @@ const APP_ICON_ID = 101;
 const MENU_TOGGLE = 1001;
 const MENU_STARTUP = 1002;
 const MENU_EXIT = 1003;
+const MENU_SETTINGS = 1004;
+const MENU_EXCLUDE_CURRENT = 1005;
 
 pub const Options = struct {
     background: bool = false,
@@ -58,6 +60,8 @@ pub const SingleInstance = struct {
 pub const Callbacks = struct {
     set_enabled: *const fn (bool) bool,
     startup_changed: *const fn (bool) void,
+    open_settings: *const fn () void,
+    exclude_window: *const fn (?api.HWND) bool,
 };
 
 var g_allocator: std.mem.Allocator = undefined;
@@ -69,6 +73,7 @@ var g_icon_added = false;
 var g_enabled = true;
 var g_portable = false;
 var g_callbacks: Callbacks = undefined;
+var g_last_external_foreground: ?api.HWND = null;
 
 pub fn init(
     allocator: std.mem.Allocator,
@@ -158,6 +163,10 @@ pub fn isStartupEnabled() bool {
     }
     defer _ = api.RegCloseKey(key);
     return api.RegQueryValueExA(key, RUN_VALUE, null, null, null, null) == api.ERROR_SUCCESS;
+}
+
+pub fn lastExternalWindow() ?api.HWND {
+    return g_last_external_foreground;
 }
 
 pub fn setStartupEnabled(allocator: std.mem.Allocator, enabled: bool, portable: bool) !void {
@@ -280,11 +289,15 @@ fn toggleEnabled() void {
 }
 
 fn showTrayMenu(hwnd: api.HWND) void {
+    captureExternalForeground();
     const menu = api.CreatePopupMenu() orelse return;
     defer _ = api.DestroyMenu(menu);
 
-    const toggle_label = if (g_enabled) "Pause predictions" else "Enable predictions";
-    _ = api.AppendMenuA(menu, api.MF_STRING, MENU_TOGGLE, toggle_label);
+    const enabled_flags: api.UINT = api.MF_STRING | if (g_enabled) @as(api.UINT, api.MF_CHECKED) else 0;
+    _ = api.AppendMenuA(menu, enabled_flags, MENU_TOGGLE, "Predictions enabled");
+    _ = api.AppendMenuA(menu, api.MF_STRING, MENU_SETTINGS, "Settings...");
+    const exclude_flags: api.UINT = api.MF_STRING | if (g_last_external_foreground == null) @as(api.UINT, api.MF_GRAYED) else 0;
+    _ = api.AppendMenuA(menu, exclude_flags, MENU_EXCLUDE_CURRENT, "Exclude current application");
     const startup_flags: api.UINT = api.MF_STRING | if (isStartupEnabled()) @as(api.UINT, api.MF_CHECKED) else 0;
     _ = api.AppendMenuA(menu, startup_flags, MENU_STARTUP, "Start with Windows");
     _ = api.AppendMenuA(menu, api.MF_SEPARATOR, 0, null);
@@ -306,6 +319,8 @@ fn showTrayMenu(hwnd: api.HWND) void {
 
     switch (command) {
         MENU_TOGGLE => toggleEnabled(),
+        MENU_SETTINGS => g_callbacks.open_settings(),
+        MENU_EXCLUDE_CURRENT => _ = g_callbacks.exclude_window(g_last_external_foreground),
         MENU_STARTUP => {
             const desired = !isStartupEnabled();
             setStartupEnabled(g_allocator, desired, g_portable) catch return;
@@ -316,12 +331,22 @@ fn showTrayMenu(hwnd: api.HWND) void {
     }
 }
 
+fn captureExternalForeground() void {
+    const foreground = api.GetForegroundWindow();
+    if (foreground) |candidate| {
+        var pid: api.DWORD = 0;
+        _ = api.GetWindowThreadProcessId(candidate, &pid);
+        if (candidate != g_window and pid != api.GetCurrentProcessId()) g_last_external_foreground = candidate;
+    }
+}
+
 fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: api.LPARAM) callconv(.C) api.LRESULT {
     switch (message) {
         TRAY_CALLBACK => {
+            captureExternalForeground();
             const event: u32 = @truncate(@as(usize, @bitCast(l_param)));
             if (event == api.WM_RBUTTONUP or event == api.WM_CONTEXTMENU) showTrayMenu(hwnd);
-            if (event == api.WM_LBUTTONDBLCLK) toggleEnabled();
+            if (event == api.WM_LBUTTONUP or event == api.WM_LBUTTONDBLCLK) g_callbacks.open_settings();
             return 0;
         },
         api.WM_CLOSE => {

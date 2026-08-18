@@ -20,6 +20,9 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("gdi32"); // Also link GDI32 for UI functions
         exe.linkSystemLibrary("advapi32");
         exe.linkSystemLibrary("shell32");
+        exe.linkSystemLibrary("comdlg32");
+        exe.linkSystemLibrary("ole32");
+        exe.linkSystemLibrary("oleaut32");
         exe.linkLibC(); // Link C library for Windows API compatibility
     }
 
@@ -61,6 +64,8 @@ pub fn build(b: *std.Build) void {
         unit_tests.linkSystemLibrary("gdi32");
         unit_tests.linkSystemLibrary("advapi32");
         unit_tests.linkSystemLibrary("shell32");
+        unit_tests.linkSystemLibrary("ole32");
+        unit_tests.linkSystemLibrary("oleaut32");
         unit_tests.linkLibC();
     }
 
