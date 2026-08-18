@@ -32,6 +32,9 @@ pub const HFONT = *anyopaque; // Font handle
 pub const HGDIOBJ = *anyopaque; // GDI object handle
 pub const HBRUSH = *anyopaque; // Brush handle
 pub const HKL = HANDLE; // Keyboard layout handle
+pub const HICON = HANDLE;
+pub const HMENU = HANDLE;
+pub const HKEY = HANDLE;
 
 //=============================================================================
 // WINDOW MESSAGE CONSTANTS
@@ -43,6 +46,9 @@ pub const WM_DESTROY = 0x0002;
 pub const WM_CLOSE = 0x0010;
 pub const WM_PAINT = 0x000F;
 pub const WM_ERASEBKGND = 0x0014;
+pub const WM_COMMAND = 0x0111;
+pub const WM_CONTEXTMENU = 0x007B;
+pub const WM_NULL = 0x0000;
 pub const WM_USER = 0x0400;
 pub const WM_APP = 0x8000;
 
@@ -53,6 +59,8 @@ pub const WM_CHAR = 0x0102;
 pub const WM_SYSKEYDOWN = 0x0104;
 pub const WM_SYSKEYUP = 0x0105;
 pub const WM_LBUTTONDOWN = 0x0201;
+pub const WM_LBUTTONDBLCLK = 0x0203;
+pub const WM_RBUTTONUP = 0x0205;
 
 // Text-related Window Messages
 pub const WM_GETTEXT = 0x000D;
@@ -176,6 +184,34 @@ pub const PS_SOLID = 0;
 
 // Cursor constants
 pub const IDC_ARROW = 32512;
+pub const IDI_APPLICATION = 32512;
+
+// Popup menu constants
+pub const MF_STRING = 0x00000000;
+pub const MF_SEPARATOR = 0x00000800;
+pub const MF_CHECKED = 0x00000008;
+pub const TPM_RIGHTBUTTON = 0x0002;
+pub const TPM_RETURNCMD = 0x0100;
+
+// Shell notification constants
+pub const NIM_ADD = 0x00000000;
+pub const NIM_MODIFY = 0x00000001;
+pub const NIM_DELETE = 0x00000002;
+pub const NIM_SETVERSION = 0x00000004;
+pub const NIF_MESSAGE = 0x00000001;
+pub const NIF_ICON = 0x00000002;
+pub const NIF_TIP = 0x00000004;
+pub const NOTIFYICON_VERSION_4 = 4;
+
+// Registry and kernel constants
+pub const ERROR_SUCCESS = 0;
+pub const ERROR_FILE_NOT_FOUND = 2;
+pub const ERROR_ALREADY_EXISTS = 183;
+pub const REG_SZ = 1;
+pub const REG_DWORD = 4;
+pub const KEY_QUERY_VALUE = 0x0001;
+pub const KEY_SET_VALUE = 0x0002;
+pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
 
 // Layered window constants
 pub const LWA_ALPHA = 0x00000002;
@@ -299,6 +335,31 @@ pub const GUITHREADINFO = extern struct {
     rcCaret: RECT,
 };
 
+pub const GUID = extern struct {
+    Data1: u32,
+    Data2: u16,
+    Data3: u16,
+    Data4: [8]u8,
+};
+
+pub const NOTIFYICONDATAA = extern struct {
+    cbSize: DWORD,
+    hWnd: HWND,
+    uID: UINT,
+    uFlags: UINT,
+    uCallbackMessage: UINT,
+    hIcon: ?HICON,
+    szTip: [128]u8,
+    dwState: DWORD,
+    dwStateMask: DWORD,
+    szInfo: [256]u8,
+    uTimeoutOrVersion: UINT,
+    szInfoTitle: [64]u8,
+    dwInfoFlags: DWORD,
+    guidItem: GUID,
+    hBalloonIcon: ?HICON,
+};
+
 //=============================================================================
 // ERROR TYPES
 //=============================================================================
@@ -385,6 +446,20 @@ pub extern "user32" fn DefWindowProcA(
     lParam: LPARAM,
 ) callconv(.C) LRESULT;
 
+pub extern "user32" fn PostQuitMessage(nExitCode: c_int) callconv(.C) void;
+pub extern "user32" fn CreatePopupMenu() callconv(.C) ?HMENU;
+pub extern "user32" fn AppendMenuA(hMenu: HMENU, uFlags: UINT, uIDNewItem: usize, lpNewItem: ?[*:0]const u8) callconv(.C) BOOL;
+pub extern "user32" fn DestroyMenu(hMenu: HMENU) callconv(.C) BOOL;
+pub extern "user32" fn TrackPopupMenu(
+    hMenu: HMENU,
+    uFlags: UINT,
+    x: c_int,
+    y: c_int,
+    nReserved: c_int,
+    hWnd: HWND,
+    prcRect: ?*const RECT,
+) callconv(.C) UINT;
+
 pub extern "user32" fn GetActiveWindow() callconv(.C) ?HWND;
 pub extern "user32" fn GetParent(hWnd: HWND) callconv(.C) ?HWND;
 pub extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.C) BOOL;
@@ -463,6 +538,9 @@ pub extern "user32" fn LoadCursorA(
     hInstance: ?HINSTANCE,
     lpCursorName: [*:0]const u8,
 ) callconv(.C) ?HANDLE;
+pub extern "user32" fn LoadIconA(hInstance: ?HINSTANCE, lpIconName: [*:0]const u8) callconv(.C) ?HICON;
+
+pub extern "shell32" fn Shell_NotifyIconA(dwMessage: DWORD, lpData: *NOTIFYICONDATAA) callconv(.C) BOOL;
 
 // Thread and process info
 pub extern "user32" fn GetWindowThreadProcessId(
@@ -599,6 +677,26 @@ pub extern "user32" fn GetSystemMetrics(
 pub extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.C) void;
 pub extern "kernel32" fn GetCurrentThreadId() callconv(.C) DWORD;
 pub extern "kernel32" fn lstrlenA(lpString: ?*const anyopaque) callconv(.C) c_int;
+pub extern "kernel32" fn CreateMutexA(lpMutexAttributes: ?*anyopaque, bInitialOwner: BOOL, lpName: [*:0]const u8) callconv(.C) ?HANDLE;
+pub extern "kernel32" fn GetLastError() callconv(.C) DWORD;
+pub extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.C) BOOL;
+
+pub extern "advapi32" fn RegCreateKeyExA(
+    hKey: HKEY,
+    lpSubKey: [*:0]const u8,
+    Reserved: DWORD,
+    lpClass: ?[*:0]u8,
+    dwOptions: DWORD,
+    samDesired: DWORD,
+    lpSecurityAttributes: ?*anyopaque,
+    phkResult: *HKEY,
+    lpdwDisposition: ?*DWORD,
+) callconv(.C) LONG;
+pub extern "advapi32" fn RegOpenKeyExA(hKey: HKEY, lpSubKey: [*:0]const u8, ulOptions: DWORD, samDesired: DWORD, phkResult: *HKEY) callconv(.C) LONG;
+pub extern "advapi32" fn RegSetValueExA(hKey: HKEY, lpValueName: [*:0]const u8, Reserved: DWORD, dwType: DWORD, lpData: [*]const u8, cbData: DWORD) callconv(.C) LONG;
+pub extern "advapi32" fn RegQueryValueExA(hKey: HKEY, lpValueName: [*:0]const u8, lpReserved: ?*DWORD, lpType: ?*DWORD, lpData: ?[*]u8, lpcbData: ?*DWORD) callconv(.C) LONG;
+pub extern "advapi32" fn RegDeleteValueA(hKey: HKEY, lpValueName: [*:0]const u8) callconv(.C) LONG;
+pub extern "advapi32" fn RegCloseKey(hKey: HKEY) callconv(.C) LONG;
 
 // Helper functions
 pub inline fn makeIntResource(id: u16) [*:0]const u8 {

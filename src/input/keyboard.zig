@@ -12,6 +12,24 @@ const prediction_worker = sysinput.suggestion.worker;
 pub var g_hook: ?win32.HHOOK = null;
 var decoder = key_decoder.KeyboardDecoder{};
 
+pub const SuggestionKeyAction = enum {
+    previous,
+    next,
+    accept,
+    hide,
+    pass,
+};
+
+pub fn suggestionKeyAction(virtual_key: api.DWORD) SuggestionKeyAction {
+    return switch (virtual_key) {
+        win32.VK_UP => .previous,
+        win32.VK_DOWN => .next,
+        win32.VK_TAB, win32.VK_RIGHT => .accept,
+        win32.VK_ESCAPE => .hide,
+        else => .pass,
+    };
+}
+
 pub fn setupKeyboardHook() !win32.HHOOK {
     const hInstance = win32.GetModuleHandleA(null);
     const hook = win32.SetWindowsHookExA(win32.WH_KEYBOARD_LL, keyboardHookProc, hInstance, 0);
@@ -35,11 +53,10 @@ fn isKeyUp(message: win32.WPARAM) bool {
 fn processSuggestionNavigation(kbd: *const win32.KBDLLHOOKSTRUCT) win32.LRESULT {
     debug.debugPrint("Suggestion navigation key: 0x{X}\n", .{kbd.vkCode});
 
-    switch (kbd.vkCode) {
-        win32.VK_UP => manager.navigateToPreviousSuggestion(),
-        win32.VK_DOWN => manager.navigateToNextSuggestion(),
-        win32.VK_TAB, win32.VK_RIGHT => manager.acceptCurrentSuggestion(),
-        win32.VK_RETURN => manager.acceptCurrentSuggestion(),
+    switch (suggestionKeyAction(kbd.vkCode)) {
+        .previous => manager.navigateToPreviousSuggestion(),
+        .next => manager.navigateToNextSuggestion(),
+        .accept => manager.acceptCurrentSuggestion(),
         else => return 0,
     }
     return 1;
@@ -94,9 +111,9 @@ fn processPhysicalKey(kbd: *const win32.KBDLLHOOKSTRUCT) void {
     debug.debugPrint("Physical key down: 0x{X}\n", .{kbd.vkCode});
 
     if (kbd.vkCode == win32.VK_ESCAPE) {
-        // Preserve the current product behavior in this phase.
-        debug.debugPrint("ESC pressed - exit\n", .{});
-        std.process.exit(0);
+        manager.hideSuggestions();
+        buffer_controller.invalidatePhysicalInputState();
+        return;
     }
 
     buffer_controller.prepareForPhysicalInput();
@@ -154,14 +171,13 @@ fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) ca
     if (!down) return win32.CallNextHookEx(null, nCode, wParam, lParam);
 
     if (manager.isSuggestionUIVisible()) {
-        switch (kbd.vkCode) {
-            win32.VK_UP,
-            win32.VK_DOWN,
-            win32.VK_TAB,
-            win32.VK_RIGHT,
-            win32.VK_RETURN,
-            => return processSuggestionNavigation(kbd),
-            else => {},
+        switch (suggestionKeyAction(kbd.vkCode)) {
+            .previous, .next, .accept => return processSuggestionNavigation(kbd),
+            .hide => {
+                manager.hideSuggestions();
+                return win32.CallNextHookEx(null, nCode, wParam, lParam);
+            },
+            .pass => {},
         }
     }
 

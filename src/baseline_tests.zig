@@ -13,6 +13,8 @@ const key_decoder = sysinput.input.key_decoder;
 const api = sysinput.win32.api;
 const candidate_model = sysinput.suggestion.candidate;
 const prediction_worker = sysinput.suggestion.worker;
+const lifecycle = sysinput.win32.lifecycle;
+const keyboard = sysinput.input.keyboard;
 
 var worker_test_mutex = std.Thread.Mutex{};
 var worker_test_learned = false;
@@ -225,6 +227,28 @@ fn testPredictionWorker() !void {
     try expect(learned);
 }
 
+fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
+    const background_args = [_][]const u8{ "SysInput.exe", "--background", "--no-startup-write" };
+    const options = lifecycle.Options.parse(&background_args);
+    try expect(options.background);
+    try expect(!options.startup_write);
+
+    const command = try lifecycle.startupCommand(allocator, "G:\\SysInput\\SysInput.exe");
+    defer allocator.free(command);
+    try expectEqualStrings("\"G:\\SysInput\\SysInput.exe\" --background", command);
+
+    var first = (try lifecycle.SingleInstance.acquireNamed("Local\\SysInput.BaselineTest.SingleInstance")) orelse
+        return error.BaselineTestFailed;
+    defer first.deinit();
+    const duplicate = try lifecycle.SingleInstance.acquireNamed("Local\\SysInput.BaselineTest.SingleInstance");
+    try expect(duplicate == null);
+
+    try expect(keyboard.suggestionKeyAction(api.VK_ESCAPE) == .hide);
+    try expect(keyboard.suggestionKeyAction(api.VK_RETURN) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_TAB) == .accept);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT) == .accept);
+}
+
 fn testEditDistance() !void {
     try expect(edit_distance.enhancedEditDistance("test", "test") == 0);
     // Characterize the current early-exit behavior. Although the implementation
@@ -316,6 +340,7 @@ pub fn main() !void {
         .{ .name = "bundled dictionary", .run = testDictionary },
         .{ .name = "personal frequency priority", .run = testPersonalFrequency },
         .{ .name = "autocomplete cache ownership", .run = testAutocompleteCacheOwnership },
+        .{ .name = "lifecycle and startup contracts", .run = testLifecycleContracts },
     };
 
     try testWordCharacters();
@@ -334,5 +359,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 12/12 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 13/13 checks passed\n");
 }

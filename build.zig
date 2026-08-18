@@ -14,8 +14,11 @@ pub fn build(b: *std.Build) void {
 
     // Link with Windows user32 library (needed for keyboard hooks and window functions)
     if (target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
         exe.linkSystemLibrary("user32");
         exe.linkSystemLibrary("gdi32"); // Also link GDI32 for UI functions
+        exe.linkSystemLibrary("advapi32");
+        exe.linkSystemLibrary("shell32");
         exe.linkLibC(); // Link C library for Windows API compatibility
     }
 
@@ -55,6 +58,8 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .windows) {
         unit_tests.linkSystemLibrary("user32");
         unit_tests.linkSystemLibrary("gdi32");
+        unit_tests.linkSystemLibrary("advapi32");
+        unit_tests.linkSystemLibrary("shell32");
         unit_tests.linkLibC();
     }
 

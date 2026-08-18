@@ -9,14 +9,39 @@ const prediction_worker = sysinput.suggestion.worker;
 const win32 = sysinput.win32.hook;
 const debug = sysinput.core.debug;
 const edit_distance = sysinput.text.edit_distance;
+const lifecycle = sysinput.win32.lifecycle;
 
 /// General Purpose Allocator for dynamic memory
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
+fn setInputEnabled(enabled: bool) bool {
+    if (enabled) {
+        if (keyboard.g_hook != null) return true;
+        keyboard.g_hook = keyboard.setupKeyboardHook() catch return false;
+        buffer_controller.invalidatePhysicalInputState();
+        return true;
+    }
+
+    if (keyboard.g_hook) |hook| {
+        if (win32.UnhookWindowsHookEx(hook) == 0) return false;
+        keyboard.g_hook = null;
+    }
+    manager.hideSuggestions();
+    buffer_controller.invalidatePhysicalInputState();
+    return true;
+}
 
 pub fn main() !void {
     // Initialize memory allocator
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    const options = lifecycle.Options.parse(args);
+
+    var single_instance = (try lifecycle.SingleInstance.acquire()) orelse return;
+    defer single_instance.deinit();
 
     // Initialize buffer controller
     try buffer_controller.init(allocator);
@@ -39,18 +64,19 @@ pub fn main() !void {
     keyboard.g_hook = try keyboard.setupKeyboardHook();
     debug.debugPrint("Keyboard hook installed successfully.\n", .{});
 
-    // Initial text field detection
-    buffer_controller.detectActiveTextField();
-
-    debug.debugPrint("Press ESC key to exit.\n", .{});
-
-    // Clean up when the application exits
     defer {
         if (keyboard.g_hook) |hook| {
             _ = win32.UnhookWindowsHookEx(hook);
+            keyboard.g_hook = null;
             debug.debugPrint("Keyboard hook removed.\n", .{});
         }
     }
+
+    try lifecycle.init(allocator, hInstance, options, .{ .set_enabled = setInputEnabled });
+    defer lifecycle.deinit();
+
+    // Initial text field detection
+    buffer_controller.detectActiveTextField();
 
     // Run the message loop to keep the hook active
     keyboard.messageLoop() catch |err| {

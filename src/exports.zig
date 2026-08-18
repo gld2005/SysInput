@@ -39,6 +39,7 @@ pub const platform = struct {
         pub const hook = @import("platform/windows/hook.zig");
         pub const text_inject = @import("platform/windows/text_inject.zig");
         pub const insertion = @import("platform/windows/insertion.zig");
+        pub const lifecycle = @import("platform/windows/lifecycle.zig");
     };
 };
 
