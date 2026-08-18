@@ -49,8 +49,8 @@ try {
     & $InnoCompiler $installerScript
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
 
-    $installer = Get-ChildItem -LiteralPath $distDirectory -Filter "SysInput-Setup-0.2.0-rc1.exe" | Select-Object -First 1
-    if ($null -eq $installer) { throw "The expected RC1 installer was not generated." }
+    $installer = Get-ChildItem -LiteralPath $distDirectory -Filter "SysInput-Setup-0.2.0-rc2.exe" | Select-Object -First 1
+    if ($null -eq $installer) { throw "The expected RC2 installer was not generated." }
 
     $hash = Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256
     $checksumPath = "$($installer.FullName).sha256"

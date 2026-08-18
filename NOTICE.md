@@ -1,6 +1,6 @@
 # Attribution and notices
 
-SysInput `v0.2.0-rc.1` is derived from the original SysInput project:
+SysInput `v0.2.0-rc.2` is derived from the original SysInput project:
 
 - Upstream repository: <https://github.com/PeterM45/SysInput>
 - Original author: PeterM45

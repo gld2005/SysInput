@@ -1,5 +1,5 @@
 #define MyAppName "SysInput"
-#define MyAppVersion "0.2.0-rc1"
+#define MyAppVersion "0.2.0-rc2"
 #define MyAppPublisher "SysInput"
 #define MyAppExeName "SysInput.exe"
 #define ProjectRoot SourcePath + "\.."

@@ -21,6 +21,7 @@ const lifecycle = sysinput.win32.lifecycle;
 const keyboard = sysinput.input.keyboard;
 const runtime_settings = sysinput.core.runtime_settings;
 const data_paths = sysinput.core.data_paths;
+const data_location = sysinput.core.data_location;
 const application_exclusions = sysinput.core.application_exclusions;
 const app_guard = sysinput.win32.app_guard;
 const abbreviation = sysinput.text.abbreviation;
@@ -558,6 +559,60 @@ fn testDataPathsAndMigration(allocator: std.mem.Allocator) !void {
     const expected_root = try std.fs.path.join(allocator, &.{ local_app_data, "SysInput" });
     defer allocator.free(expected_root);
     try expectEqualStrings(expected_root, standard.root);
+}
+
+fn testCustomDataLocation(allocator: std.mem.Allocator) !void {
+    const root = try phase10TempRoot(allocator, "custom-location");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    const control_root = try std.fs.path.join(allocator, &.{ root, "control" });
+    defer allocator.free(control_root);
+    const current_root = try std.fs.path.join(allocator, &.{ root, "current" });
+    defer allocator.free(current_root);
+    const target_root = try std.fs.path.join(allocator, &.{ root, "目标-data" });
+    defer allocator.free(target_root);
+    try std.fs.cwd().makePath(current_root);
+    const settings_path = try std.fs.path.join(allocator, &.{ current_root, "settings.bin" });
+    defer allocator.free(settings_path);
+    var settings_file = try std.fs.cwd().createFile(settings_path, .{ .truncate = true });
+    try settings_file.writeAll("settings-data");
+    settings_file.close();
+
+    try data_location.stageChange(allocator, control_root, current_root, target_root, true);
+    const applied = (try data_location.applyPending(allocator, control_root, control_root, current_root)).?;
+    defer allocator.free(applied);
+    try expect(data_location.samePath(applied, target_root));
+    const copied_path = try std.fs.path.join(allocator, &.{ target_root, "settings.bin" });
+    defer allocator.free(copied_path);
+    const copied = try std.fs.cwd().readFileAlloc(allocator, copied_path, 64);
+    defer allocator.free(copied);
+    try expectEqualStrings("settings-data", copied);
+    try std.fs.cwd().access(settings_path, .{});
+    const active = (try data_location.loadActive(allocator, control_root)).?;
+    defer allocator.free(active);
+    try expect(data_location.samePath(active, target_root));
+
+    try data_location.stageChange(allocator, control_root, target_root, control_root, false);
+    const restored = (try data_location.applyPending(allocator, control_root, control_root, target_root)).?;
+    defer allocator.free(restored);
+    try expect(data_location.samePath(restored, control_root));
+    try expect((try data_location.loadActive(allocator, control_root)) == null);
+
+    const occupied = try std.fs.path.join(allocator, &.{ root, "occupied" });
+    defer allocator.free(occupied);
+    try std.fs.cwd().makePath(occupied);
+    const foreign = try std.fs.path.join(allocator, &.{ occupied, "other.txt" });
+    defer allocator.free(foreign);
+    var foreign_file = try std.fs.cwd().createFile(foreign, .{ .truncate = true });
+    foreign_file.close();
+    if (data_location.stageChange(allocator, control_root, target_root, occupied, true)) |_| {
+        return error.BaselineTestFailed;
+    } else |err| try expect(err == error.TargetDirectoryNotEmpty);
+    const nested = try std.fs.path.join(allocator, &.{ target_root, "nested" });
+    defer allocator.free(nested);
+    if (data_location.stageChange(allocator, control_root, target_root, nested, true)) |_| {
+        return error.BaselineTestFailed;
+    } else |err| try expect(err == error.TargetInsideCurrentDirectory);
 }
 
 fn testLearningCanBeDisabled(allocator: std.mem.Allocator) !void {
@@ -1259,6 +1314,7 @@ pub fn main() !void {
         .{ .name = "lifecycle and startup contracts", .run = testLifecycleContracts },
         .{ .name = "runtime settings persistence and fallback", .run = testRuntimeSettings },
         .{ .name = "data paths and non-destructive migration", .run = testDataPathsAndMigration },
+        .{ .name = "custom data directory and safe migration", .run = testCustomDataLocation },
         .{ .name = "personal learning can be disabled", .run = testLearningCanBeDisabled },
         .{ .name = "application exclusion persistence", .run = testApplicationExclusions },
         .{ .name = "application guard safety", .run = testApplicationGuard },
@@ -1295,5 +1351,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 47/47 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 48/48 checks passed\n");
 }

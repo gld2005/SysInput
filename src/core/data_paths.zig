@@ -1,4 +1,5 @@
 const std = @import("std");
+const data_location = @import("data_location.zig");
 
 pub const Mode = enum { standard, portable };
 
@@ -8,6 +9,10 @@ pub const DataPaths = struct {
     root: []u8,
     profiles: []u8,
     corpus: []u8,
+    control_root: []u8,
+    location_status: LocationStatus = .unchanged,
+
+    pub const LocationStatus = enum { unchanged, applied, failed };
 
     pub fn init(allocator: std.mem.Allocator, portable: bool) !DataPaths {
         const executable_dir = try std.fs.selfExeDirPathAlloc(allocator);
@@ -16,7 +21,28 @@ pub const DataPaths = struct {
 
         const local_app_data = try std.process.getEnvVarOwned(allocator, "LOCALAPPDATA");
         defer allocator.free(local_app_data);
-        return initFromRoots(allocator, .standard, executable_dir, local_app_data);
+        const default_root = try std.fs.path.join(allocator, &.{ local_app_data, "SysInput" });
+        defer allocator.free(default_root);
+        try std.fs.cwd().makePath(default_root);
+
+        var current_root = (try data_location.loadActive(allocator, default_root)) orelse try allocator.dupe(u8, default_root);
+        defer allocator.free(current_root);
+        var location_status: LocationStatus = .unchanged;
+        data_location.validateWritable(allocator, current_root) catch {
+            allocator.free(current_root);
+            current_root = try allocator.dupe(u8, default_root);
+            location_status = .failed;
+        };
+        if (data_location.applyPending(allocator, default_root, default_root, current_root)) |applied| {
+            if (applied) |new_root| {
+                allocator.free(current_root);
+                current_root = new_root;
+                location_status = .applied;
+            }
+        } else |_| {
+            location_status = .failed;
+        }
+        return initResolved(allocator, .standard, executable_dir, current_root, default_root, location_status);
     }
 
     pub fn initFromRoots(
@@ -29,7 +55,24 @@ pub const DataPaths = struct {
             .portable => try std.fs.path.join(allocator, &.{ executable_dir, "data" }),
             .standard => try std.fs.path.join(allocator, &.{ local_app_data orelse return error.MissingLocalAppData, "SysInput" }),
         };
+        defer allocator.free(root);
+        const control_root = try allocator.dupe(u8, root);
+        defer allocator.free(control_root);
+        return initResolved(allocator, mode, executable_dir, root, control_root, .unchanged);
+    }
+
+    fn initResolved(
+        allocator: std.mem.Allocator,
+        mode: Mode,
+        executable_dir: []const u8,
+        resolved_root: []const u8,
+        control_directory: []const u8,
+        location_status: LocationStatus,
+    ) !DataPaths {
+        const root = try allocator.dupe(u8, resolved_root);
         errdefer allocator.free(root);
+        const control_root = try allocator.dupe(u8, control_directory);
+        errdefer allocator.free(control_root);
         const profiles = try std.fs.path.join(allocator, &.{ root, "profiles" });
         errdefer allocator.free(profiles);
         const corpus = try std.fs.path.join(allocator, &.{ root, "corpus" });
@@ -44,6 +87,8 @@ pub const DataPaths = struct {
             .root = root,
             .profiles = profiles,
             .corpus = corpus,
+            .control_root = control_root,
+            .location_status = location_status,
         };
         try result.migrateLegacyProfiles(executable_dir);
         return result;
@@ -53,6 +98,16 @@ pub const DataPaths = struct {
         self.allocator.free(self.root);
         self.allocator.free(self.profiles);
         self.allocator.free(self.corpus);
+        self.allocator.free(self.control_root);
+    }
+
+    pub fn stageRootChange(self: *const DataPaths, target: []const u8, copy_existing: bool) !void {
+        if (self.mode == .portable) return error.PortableDataDirectoryFixed;
+        try data_location.stageChange(self.allocator, self.control_root, self.root, target, copy_existing);
+    }
+
+    pub fn defaultRoot(self: *const DataPaths) []const u8 {
+        return self.control_root;
     }
 
     pub fn path(self: *const DataPaths, name: []const u8) ![]u8 {

@@ -181,6 +181,7 @@ pub const EN_CHANGE = 0x0300;
 pub const MB_OK = 0x00000000;
 pub const MB_YESNO = 0x00000004;
 pub const MB_ICONWARNING = 0x00000030;
+pub const MB_ICONINFORMATION = 0x00000040;
 pub const IDYES = 6;
 pub const CS_DROPSHADOW = 0x00020000;
 
@@ -468,6 +469,17 @@ pub const BROWSEINFOA = extern struct {
     iImage: c_int,
 };
 
+pub const BROWSEINFOW = extern struct {
+    hwndOwner: ?HWND,
+    pidlRoot: ?*anyopaque,
+    pszDisplayName: [*:0]u16,
+    lpszTitle: ?[*:0]const u16,
+    ulFlags: UINT,
+    lpfn: ?*const fn (?HWND, UINT, LPARAM, LPARAM) callconv(.C) c_int,
+    lParam: LPARAM,
+    iImage: c_int,
+};
+
 pub const OFN_FILEMUSTEXIST = 0x00001000;
 pub const OFN_PATHMUSTEXIST = 0x00000800;
 pub const OFN_NOCHANGEDIR = 0x00000008;
@@ -522,6 +534,20 @@ pub extern "user32" fn CreateWindowExA(
     hInstance: HINSTANCE,
     lpParam: ?*anyopaque,
 ) callconv(.C) ?HWND;
+pub extern "user32" fn CreateWindowExW(
+    dwExStyle: DWORD,
+    lpClassName: [*:0]const u16,
+    lpWindowName: [*:0]const u16,
+    dwStyle: DWORD,
+    x: c_int,
+    y: c_int,
+    nWidth: c_int,
+    nHeight: c_int,
+    hWndParent: ?HWND,
+    hMenu: ?HANDLE,
+    hInstance: HINSTANCE,
+    lpParam: ?*anyopaque,
+) callconv(.C) ?HWND;
 
 pub extern "user32" fn ShowWindow(
     hWnd: HWND,
@@ -531,6 +557,9 @@ pub extern "user32" fn ShowWindow(
 pub extern "user32" fn EnableWindow(hWnd: HWND, bEnable: BOOL) callconv(.C) BOOL;
 pub extern "user32" fn IsWindowVisible(hWnd: HWND) callconv(.C) BOOL;
 pub extern "user32" fn SetWindowTextA(hWnd: HWND, lpString: [*:0]const u8) callconv(.C) BOOL;
+pub extern "user32" fn SetWindowTextW(hWnd: HWND, lpString: [*:0]const u16) callconv(.C) BOOL;
+pub extern "user32" fn GetWindowTextLengthW(hWnd: HWND) callconv(.C) c_int;
+pub extern "user32" fn GetWindowTextW(hWnd: HWND, lpString: [*:0]u16, nMaxCount: c_int) callconv(.C) c_int;
 
 pub extern "user32" fn UpdateWindow(
     hWnd: HWND,
@@ -694,6 +723,8 @@ pub extern "user32" fn LoadIconA(hInstance: ?HINSTANCE, lpIconName: [*:0]const u
 pub extern "shell32" fn Shell_NotifyIconA(dwMessage: DWORD, lpData: *NOTIFYICONDATAA) callconv(.C) BOOL;
 pub extern "shell32" fn SHBrowseForFolderA(info: *BROWSEINFOA) callconv(.C) ?*anyopaque;
 pub extern "shell32" fn SHGetPathFromIDListA(item: *anyopaque, path: [*:0]u8) callconv(.C) BOOL;
+pub extern "shell32" fn SHBrowseForFolderW(info: *BROWSEINFOW) callconv(.C) ?*anyopaque;
+pub extern "shell32" fn SHGetPathFromIDListW(item: *anyopaque, path: [*:0]u16) callconv(.C) BOOL;
 pub extern "comdlg32" fn GetOpenFileNameA(param: *OPENFILENAMEA) callconv(.C) BOOL;
 pub extern "comdlg32" fn GetSaveFileNameA(param: *OPENFILENAMEA) callconv(.C) BOOL;
 pub extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: DWORD) callconv(.C) HRESULT;

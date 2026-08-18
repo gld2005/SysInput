@@ -3,6 +3,8 @@ const sysinput = @import("root").sysinput;
 
 const api = sysinput.win32.api;
 const runtime_settings = sysinput.core.runtime_settings;
+const data_paths = sysinput.core.data_paths;
+const data_location = sysinput.core.data_location;
 const exclusions = sysinput.core.application_exclusions;
 const abbreviation_window = sysinput.ui.abbreviation_window;
 const corpus_window = sysinput.ui.corpus_window;
@@ -35,6 +37,11 @@ const ID_REMOVE_APP = 2034;
 const ID_THEME = 2040;
 const ID_ACCENT = 2041;
 const ID_DENSITY = 2042;
+const ID_DATA_DIRECTORY = 2050;
+const ID_BROWSE_DATA = 2051;
+const ID_COPY_DATA = 2052;
+const ID_RESTORE_DATA = 2053;
+const ID_APPLY_DATA = 2054;
 
 pub const Page = enum(u8) { general, prediction, appearance, keyboard, applications, data, about };
 const page_count = @typeInfo(Page).@"enum".fields.len;
@@ -79,16 +86,20 @@ var abbreviation_prefix: ?api.HWND = null;
 var theme_combo: ?api.HWND = null;
 var accent_combo: ?api.HWND = null;
 var density_combo: ?api.HWND = null;
+var paths: *const data_paths.DataPaths = undefined;
+var data_directory: ?api.HWND = null;
+var copy_data: ?api.HWND = null;
 var controls: [bindings.len]?api.HWND = [_]?api.HWND{null} ** bindings.len;
 var page_controls: [48]PageControl = undefined;
 var page_control_count: usize = 0;
 var current_page: Page = .general;
 
-pub fn init(ui_allocator: std.mem.Allocator, module_instance: api.HINSTANCE, runtime_store: *runtime_settings.Store, applications: *exclusions.Store, ui_callbacks: Callbacks) !void {
+pub fn init(ui_allocator: std.mem.Allocator, module_instance: api.HINSTANCE, runtime_store: *runtime_settings.Store, applications: *exclusions.Store, runtime_paths: *const data_paths.DataPaths, ui_callbacks: Callbacks) !void {
     allocator = ui_allocator;
     instance = module_instance;
     settings = runtime_store;
     exclusion_store = applications;
+    paths = runtime_paths;
     callbacks = ui_callbacks;
     settings_font = api.CreateFontA(-16, 0, 0, 0, api.FW_NORMAL, 0, 0, 0, api.ANSI_CHARSET, api.OUT_DEFAULT_PRECIS, api.CLIP_DEFAULT_PRECIS, api.CLEARTYPE_QUALITY, api.DEFAULT_PITCH, "Segoe UI");
     const icon = api.LoadIconA(instance, api.makeIntResource(APP_ICON_ID));
@@ -200,22 +211,47 @@ fn createControls(parent: api.HWND) !void {
     _ = try createControl("BUTTON", "Enable / disable", api.BS_PUSHBUTTON | api.WS_TABSTOP, 370, 294, 120, 28, parent, ID_TOGGLE_APP, .applications);
     _ = try createControl("BUTTON", "Remove", api.BS_PUSHBUTTON | api.WS_TABSTOP, 500, 294, 80, 28, parent, ID_REMOVE_APP, .applications);
 
-    _ = try createControl("STATIC", "All SysInput data stays local.", 0, 160, 64, 400, 24, parent, 0, .data);
-    _ = try createControl("STATIC", "Data directory:", 0, 160, 108, 400, 22, parent, 0, .data);
-    var data_text: [exclusions.MAX_PATH_BYTES:0]u8 = undefined;
-    const directory = std.fs.path.dirname(settings.path) orelse settings.path;
-    const length = @min(directory.len, data_text.len - 1);
-    @memcpy(data_text[0..length], directory[0..length]);
-    data_text[length] = 0;
-    _ = try createControl("STATIC", &data_text, 0, 160, 136, 410, 60, parent, 0, .data);
+    _ = try createControl("STATIC", "All SysInput data stays local.", 0, 160, 58, 400, 24, parent, 0, .data);
+    _ = try createControl("STATIC", "Data directory:", 0, 160, 96, 400, 22, parent, 0, .data);
+    data_directory = try createWideEdit(parent, paths.root, 160, 120, 310, 26, ID_DATA_DIRECTORY, .data);
+    const browse_data = try createControl("BUTTON", "Browse...", api.BS_PUSHBUTTON | api.WS_TABSTOP, 480, 120, 98, 26, parent, ID_BROWSE_DATA, .data);
+    copy_data = try createControl("BUTTON", "Copy existing data to the new directory (recommended)", api.BS_AUTOCHECKBOX | api.WS_TABSTOP, 160, 162, 418, 26, parent, ID_COPY_DATA, .data);
+    _ = api.SendMessageA(copy_data.?, api.BM_SETCHECK, api.BST_CHECKED, 0);
+    const restore_data = try createControl("BUTTON", "Restore default", api.BS_PUSHBUTTON | api.WS_TABSTOP, 160, 208, 120, 28, parent, ID_RESTORE_DATA, .data);
+    const apply_data = try createControl("BUTTON", "Apply", api.BS_PUSHBUTTON | api.WS_TABSTOP, 470, 208, 108, 28, parent, ID_APPLY_DATA, .data);
+    _ = try createControl("STATIC", "The change is applied safely the next time SysInput starts. The old data is not deleted.", 0, 160, 258, 410, 50, parent, 0, .data);
+    if (paths.mode == .portable) {
+        _ = api.EnableWindow(data_directory.?, 0);
+        _ = api.EnableWindow(browse_data, 0);
+        _ = api.EnableWindow(copy_data.?, 0);
+        _ = api.EnableWindow(restore_data, 0);
+        _ = api.EnableWindow(apply_data, 0);
+    }
 
-    _ = try createControl("STATIC", "SysInput v0.2.0 RC1", 0, 160, 64, 400, 28, parent, 0, .about);
+    _ = try createControl("STATIC", "SysInput v0.2.0 RC2", 0, 160, 64, 400, 28, parent, 0, .about);
     _ = try createControl("STATIC", "Lightweight English input assistance for Windows. No cloud sync, telemetry, grammar correction, or online model.", 0, 160, 108, 400, 72, parent, 0, .about);
     _ = try createControl("STATIC", "Feedback is planned and currently unavailable.", 0, 160, 204, 400, 28, parent, 0, .about);
 
     status_label = try createControl("STATIC", "", 0, 158, 410, 420, 22, parent, 0, null);
     refresh();
     switchPage(.general);
+    switch (paths.location_status) {
+        .applied => setStatus("Data directory changed successfully. The previous data was kept."),
+        .failed => setStatus("The requested data-directory change failed; the previous directory is still in use."),
+        .unchanged => if (paths.mode == .portable) setStatus("Portable mode always uses the data directory beside SysInput.exe."),
+    }
+}
+
+fn createWideEdit(parent: api.HWND, value: []const u8, x: c_int, y: c_int, width: c_int, height: c_int, id: usize, page: Page) !api.HWND {
+    const wide_value = try std.unicode.utf8ToUtf16LeAllocZ(allocator, value);
+    defer allocator.free(wide_value);
+    const edit_class = std.unicode.utf8ToUtf16LeStringLiteral("EDIT");
+    const handle = api.CreateWindowExW(api.WS_EX_CLIENTEDGE, edit_class, wide_value.ptr, api.WS_CHILD | api.ES_AUTOHSCROLL | api.WS_TABSTOP, x, y, width, height, parent, @ptrFromInt(id), instance, null) orelse return error.SettingsControlCreationFailed;
+    if (settings_font) |font| _ = api.SendMessageA(handle, api.WM_SETFONT, @intFromPtr(font), 1);
+    if (page_control_count >= page_controls.len) return error.TooManySettingsControls;
+    page_controls[page_control_count] = .{ .handle = handle, .page = page };
+    page_control_count += 1;
+    return handle;
 }
 
 fn pageCheckbox(parent: api.HWND, title: [*:0]const u8, y: c_int, id: usize, page: Page) !api.HWND {
@@ -337,6 +373,85 @@ fn saveAppearance() void {
     setStatus("Appearance saved.");
 }
 
+fn setDirectoryText(value: []const u8) void {
+    const control = data_directory orelse return;
+    const wide = std.unicode.utf8ToUtf16LeAllocZ(allocator, value) catch {
+        setStatus("The directory contains unsupported text.");
+        return;
+    };
+    defer allocator.free(wide);
+    _ = api.SetWindowTextW(control, wide.ptr);
+}
+
+fn readDirectoryText() ![]u8 {
+    const control = data_directory orelse return error.NoDataDirectoryControl;
+    var wide: [data_location.MAX_PATH_BYTES + 1:0]u16 = [_:0]u16{0} ** (data_location.MAX_PATH_BYTES + 1);
+    const length = api.GetWindowTextW(control, &wide, @intCast(wide.len));
+    if (length <= 0) return error.InvalidDataDirectory;
+    return std.unicode.utf16LeToUtf8Alloc(allocator, wide[0..@intCast(length)]);
+}
+
+fn browseDataDirectory() void {
+    if (paths.mode == .portable) return;
+    var display: [260:0]u16 = [_:0]u16{0} ** 260;
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("Select the SysInput data directory");
+    var info = api.BROWSEINFOW{
+        .hwndOwner = window,
+        .pidlRoot = null,
+        .pszDisplayName = &display,
+        .lpszTitle = title,
+        .ulFlags = api.BIF_RETURNONLYFSDIRS | api.BIF_NEWDIALOGSTYLE,
+        .lpfn = null,
+        .lParam = 0,
+        .iImage = 0,
+    };
+    const item = api.SHBrowseForFolderW(&info) orelse return;
+    defer api.CoTaskMemFree(item);
+    var wide_path: [data_location.MAX_PATH_BYTES + 1:0]u16 = [_:0]u16{0} ** (data_location.MAX_PATH_BYTES + 1);
+    if (api.SHGetPathFromIDListW(item, &wide_path) == 0) return;
+    const utf8 = std.unicode.utf16LeToUtf8Alloc(allocator, std.mem.sliceTo(&wide_path, 0)) catch {
+        setStatus("The selected directory could not be read.");
+        return;
+    };
+    defer allocator.free(utf8);
+    setDirectoryText(utf8);
+}
+
+fn restoreDefaultDataDirectory() void {
+    if (paths.mode == .portable) return;
+    setDirectoryText(paths.defaultRoot());
+    if (copy_data) |control| _ = api.SendMessageA(control, api.BM_SETCHECK, api.BST_UNCHECKED, 0);
+    setStatus("Default selected. Its existing data will be used; custom data will be retained.");
+}
+
+fn applyDataDirectory() void {
+    if (paths.mode == .portable) return;
+    const entered = readDirectoryText() catch {
+        setStatus("Enter or select a valid absolute directory.");
+        return;
+    };
+    defer allocator.free(entered);
+    const target = std.mem.trim(u8, entered, " \t\r\n");
+    if (data_location.samePath(paths.root, target) and paths.location_status != .failed) {
+        data_location.cancelPending(allocator, paths.control_root);
+        setStatus("This directory is already in use.");
+        return;
+    }
+    const should_copy = if (copy_data) |control| api.SendMessageA(control, api.BM_GETCHECK, 0, 0) == api.BST_CHECKED else true;
+    paths.stageRootChange(target, should_copy) catch |err| {
+        switch (err) {
+            error.TargetDirectoryNotEmpty => setStatus("For copying, select an empty directory or clear the copy option to use existing data."),
+            error.InvalidDataDirectory => setStatus("Enter or select a valid absolute directory."),
+            error.TargetInsideCurrentDirectory => setStatus("Choose a directory outside the current SysInput data directory."),
+            error.AccessDenied => setStatus("SysInput cannot write to that directory."),
+            else => setStatus("The data-directory change could not be prepared."),
+        }
+        return;
+    };
+    setStatus("Change prepared. Exit and restart SysInput to finish the switch.");
+    _ = api.MessageBoxA(window, "The data-directory change is ready. Exit SysInput normally, then start it again to copy and switch the data safely.", "SysInput", api.MB_OK | api.MB_ICONINFORMATION);
+}
+
 fn selectedApplicationIndex() ?usize {
     const list = list_box orelse return null;
     const selection = api.SendMessageA(list, api.LB_GETCURSEL, 0, 0);
@@ -418,6 +533,9 @@ fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: a
                 ID_BROWSE => browseApplication(),
                 ID_TOGGLE_APP => toggleSelectedApplication(),
                 ID_REMOVE_APP => removeSelectedApplication(),
+                ID_BROWSE_DATA => browseDataDirectory(),
+                ID_RESTORE_DATA => restoreDefaultDataDirectory(),
+                ID_APPLY_DATA => applyDataDirectory(),
                 else => {},
             };
             return 0;
@@ -436,6 +554,8 @@ fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: a
             theme_combo = null;
             accent_combo = null;
             density_combo = null;
+            data_directory = null;
+            copy_data = null;
             controls = [_]?api.HWND{null} ** bindings.len;
             page_control_count = 0;
             return 0;

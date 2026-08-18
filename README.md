@@ -2,24 +2,24 @@
 
 **SysInput** is a lightweight, local-only English input assistant for Windows, written in [Zig](https://ziglang.org/). It provides system-wide word completion, next-word and phrase prediction, abbreviation expansion, corpus-assisted suggestions, and bounded personalization.
 
-> **Current release:** [`v0.2.0-rc.1`](https://github.com/gld2005/SysInput/releases/tag/v0.2.0-rc.1) on the `gld2005` branch. This is a release candidate and a substantial upgrade of [PeterM45/SysInput](https://github.com/PeterM45/SysInput), not an official upstream release. The original copyright and MIT license are preserved in [LICENSE](LICENSE); full attribution is in [NOTICE.md](NOTICE.md).
+> **Current release:** [`v0.2.0-rc.2`](https://github.com/gld2005/SysInput/releases/tag/v0.2.0-rc.2) on the `gld2005` branch. This is a release candidate and a substantial upgrade of [PeterM45/SysInput](https://github.com/PeterM45/SysInput), not an official upstream release. The original copyright and MIT license are preserved in [LICENSE](LICENSE); full attribution is in [NOTICE.md](NOTICE.md).
 
-## Download v0.2.0-rc.1
+## Download v0.2.0-rc.2
 
-- [Download the Windows installer](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.1/SysInput-Setup-0.2.0-rc1.exe)
-- [Download the SHA-256 checksum file](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.1/SysInput-Setup-0.2.0-rc1.exe.sha256)
-- [Open the GitHub Release page](https://github.com/gld2005/SysInput/releases/tag/v0.2.0-rc.1)
+- [Download the Windows installer](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.2/SysInput-Setup-0.2.0-rc2.exe)
+- [Download the SHA-256 checksum file](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.2/SysInput-Setup-0.2.0-rc2.exe.sha256)
+- [Open the GitHub Release page](https://github.com/gld2005/SysInput/releases/tag/v0.2.0-rc.2)
 
 Installer SHA-256:
 
 ```text
-967aa686ba749473de72b64aa3e5ec5ad24196eb42126baa8c0bfee58b850d44
+0146b16d9905ea9f8d2062df8b8a4536239e99f3ff4244876bb0273fba81ae76
 ```
 
 Verify it in PowerShell:
 
 ```powershell
-(Get-FileHash .\SysInput-Setup-0.2.0-rc1.exe -Algorithm SHA256).Hash
+(Get-FileHash .\SysInput-Setup-0.2.0-rc2.exe -Algorithm SHA256).Hash
 ```
 
 The RC installer is not Authenticode-signed, so Windows may display an **Unknown publisher** warning. Verify the checksum before installation.
@@ -54,8 +54,8 @@ SysInput is an input-assistance utility, not a grammar checker or language-learn
 
 ### Recommended: Windows installer
 
-1. Download [`SysInput-Setup-0.2.0-rc1.exe`](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.1/SysInput-Setup-0.2.0-rc1.exe).
-2. Verify its SHA-256 checksum using the value above or the accompanying [checksum file](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.1/SysInput-Setup-0.2.0-rc1.exe.sha256).
+1. Download [`SysInput-Setup-0.2.0-rc2.exe`](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.2/SysInput-Setup-0.2.0-rc2.exe).
+2. Verify its SHA-256 checksum using the value above or the accompanying [checksum file](https://github.com/gld2005/SysInput/releases/download/v0.2.0-rc.2/SysInput-Setup-0.2.0-rc2.exe.sha256).
 3. Run the installer and choose whether SysInput should start with Windows.
 4. After launch, use the tray icon to open Settings, pause predictions, exclude an application, or exit.
 
@@ -103,19 +103,21 @@ Release artifacts are written to `dist`.
 
 ## Runtime data and privacy
 
-Installed mode stores SysInput-owned data under `%LOCALAPPDATA%\SysInput`. Portable mode stores it in a `data` directory beside the executable.
+Installed mode stores SysInput-owned data under `%LOCALAPPDATA%\SysInput` by default. The **Settings > Data** page can select another writable local directory. A requested change is completed on the next launch, after the previous instance has saved its learning data; copying never deletes the previous directory. Portable mode always stores data in a `data` directory beside the executable and does not allow a separate custom location.
 
 The data is separated into personal learning, imported-corpus indexes, abbreviations, exclusions, and settings. SysInput does not upload user input, corpus content, abbreviation content, diagnostics, or performance data.
 
+The uninstaller preserves custom data directories. Remove a custom directory manually only after confirming that its learning data, abbreviations, and corpus indexes are no longer needed.
+
 ## Release-candidate validation
 
-For `v0.2.0-rc.1`:
+For `v0.2.0-rc.2`:
 
-- 47 automated characterization and regression checks pass in `ReleaseFast`.
+- 48 automated characterization and regression checks pass in `ReleaseFast`.
 - Repeatable Hook and candidate benchmarks remain below the project targets of 1 ms P95 and 20 ms P95 respectively.
 - Observed idle working set is approximately 14.5 MiB.
-- The published installer was downloaded again from GitHub and its SHA-256 was verified.
-- Silent install, installed-program startup, normal `--shutdown`, shortcut behavior, startup opt-out, and uninstall were successfully exercised.
+- The installer and matching SHA-256 file are generated from the verified `ReleaseFast` build.
+- RC1 installation, startup, shutdown, shortcut, startup opt-out, and uninstall behavior remains covered by the release lifecycle baseline.
 
 Before a stable `v0.2.0`, final interactive acceptance is still required across the complete application and system matrix listed in [CHANGELOG.md](CHANGELOG.md).
 
@@ -143,6 +145,8 @@ SysInput/
 
 - [Release history and known gates](CHANGELOG.md)
 - [Installation and release validation](docs/PHASE14_INSTALL_AND_RELEASE.md)
+- [RC2 release notes](docs/RELEASE_NOTES_0.2.0_RC2.md)
+- [Custom data directory](docs/CUSTOM_DATA_DIRECTORY.md)
 - [Abbreviation management](docs/PHASE12_ABBREVIATIONS.md)
 - [Corpus import and prediction](docs/PHASE13_CORPUS.md)
 - [Contribution guide](CONTRIBUTING.md)

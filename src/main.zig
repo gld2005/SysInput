@@ -162,6 +162,7 @@ pub fn main() !void {
         hInstance,
         &runtime_store,
         &exclusion_store,
+        &paths,
         .{
             .set_enabled = setInputEnabled,
             .set_startup = setStartupFromSettings,

@@ -2,6 +2,19 @@
 
 This changelog describes changes on the `gld2005` branch relative to the original upstream project. The project follows semantic versioning for release labels.
 
+## 0.2.0-rc.2 - 2026-08-18
+
+### Added
+
+- Installed mode can select a custom writable data directory from **Settings > Data**, with Unicode path support, restart-time non-destructive migration, default-location restore, and portable-mode protection.
+
+### Safety and validation
+
+- Data-directory changes are staged until restart so the prediction worker can finish saving the previous profile before migration.
+- Copy migration accepts only an empty destination, preserves the complete source tree, and commits the locator only after success.
+- Invalid, unavailable, root, nested, and unwritable destinations fail safely; installed mode falls back to `%LOCALAPPDATA%\SysInput` if the selected location becomes unavailable.
+- 48 automated characterization and regression checks pass in both `ReleaseSafe` and `ReleaseFast`; the RC2 installer is built from the verified `ReleaseFast` executable.
+
 ## 0.2.0-rc.1 - 2026-08-18
 
 ### Release intent
