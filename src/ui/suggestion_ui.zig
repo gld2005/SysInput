@@ -61,12 +61,13 @@ pub const AutocompleteUI = struct {
         // Display and navigation are intentionally read-only. Text is changed
         // only by the manager's explicit acceptance path.
         if (suggestions.len > 0) {
-            self.is_visible = true;
             self.current_suggestion = suggestions[0];
             debug.debugPrint("First suggestion: '{s}'\n", .{self.current_suggestion.?});
 
-            // Show UI suggestion list near cursor position
+            // Resolve and validate the real caret before declaring the UI
+            // visible. Missing caret information suppresses the popup.
             try self.showSuggestionUI(x, y);
+            self.is_visible = true;
 
             // Force a redraw of the window if it already exists
             if (self.suggestion_window != null) {
@@ -80,48 +81,21 @@ pub const AutocompleteUI = struct {
 
     /// Show the suggestion UI window
     fn showSuggestionUI(self: *AutocompleteUI, x: i32, y: i32) !void {
+        _ = x;
+        _ = y;
         // Only attempt to create or show the window if we have suggestions
         if (self.suggestions.len == 0) {
             return;
         }
 
-        // Get position for suggestions
-        var suggested_pos = api.POINT{ .x = x, .y = y };
-
-        // Only use provided coordinates if they're non-zero
-        if (x == 0 and y == 0) {
-            // Get intelligent position based on caret or text field
-            suggested_pos = position.getCaretPosition();
-        }
-
-        // Get DPI scaling to adjust positioning and sizes
-        const hdc = api.GetDC(null);
-        const dpi = if (hdc != null) @as(f32, @floatFromInt(api.GetDeviceCaps(hdc.?, api.LOGPIXELSY))) / 96.0 else 1.0;
-        if (hdc != null) {
-            _ = api.ReleaseDC(null, hdc.?);
-        }
-
-        // Add DPI-aware padding below the caret
-        suggested_pos.y += @intFromFloat(@as(f32, 20.0 * dpi));
-
-        // Calculate window size based on suggestions - use constants directly from the file
-        const size = position.calculateSuggestionWindowSize(self.suggestions, config.UI.SUGGESTION_FONT_HEIGHT, // Use the fully qualified path
-            sysinput.ui.window.WINDOW_PADDING);
-
-        // Adjust for screen boundaries
-        const screen_width = api.GetSystemMetrics(api.SM_CXSCREEN);
-        const screen_height = api.GetSystemMetrics(api.SM_CYSCREEN);
-
-        if (suggested_pos.x + size.width > screen_width) {
-            suggested_pos.x = screen_width - size.width;
-        }
-        if (suggested_pos.y + size.height > screen_height) {
-            // Move above caret if not enough space below
-            const height_f32: f32 = @floatFromInt(size.height);
-            suggested_pos.y -= @intFromFloat((20.0 + height_f32) * dpi);
-        }
-
-        debug.debugPrint("Showing suggestion UI at {}, {}\n", .{ suggested_pos.x, suggested_pos.y });
+        const caret = position.getCaretRect() orelse return error.CaretUnavailable;
+        const size = position.calculateSuggestionWindowSize(
+            self.suggestions,
+            config.UI.SUGGESTION_FONT_HEIGHT,
+            sysinput.ui.window.WINDOW_PADDING,
+        );
+        const placement = position.placeSuggestionPopup(caret, size) orelse return error.NoSafePopupPlacement;
+        debug.debugPrint("Showing suggestion UI at {}, {}\n", .{ placement.x, placement.y });
 
         // Create window if it doesn't exist
         if (self.suggestion_window == null) {
@@ -132,10 +106,10 @@ pub const AutocompleteUI = struct {
                 sysinput.ui.window.SUGGESTION_WINDOW_CLASS,
                 "Suggestions\x00",
                 config.WIN32.SUGGESTION_WINDOW_STYLE,
-                suggested_pos.x,
-                suggested_pos.y,
-                size.width,
-                size.height,
+                placement.x,
+                placement.y,
+                placement.width,
+                placement.height,
                 null, // No parent
                 null, // No menu
                 self.instance,
@@ -153,10 +127,10 @@ pub const AutocompleteUI = struct {
             _ = api.SetWindowPos(
                 self.suggestion_window.?,
                 api.HWND_TOPMOST,
-                suggested_pos.x,
-                suggested_pos.y,
-                size.width,
-                size.height,
+                placement.x,
+                placement.y,
+                placement.width,
+                placement.height,
                 api.SWP_SHOWWINDOW,
             );
         }

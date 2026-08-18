@@ -1,6 +1,7 @@
 const sysinput = @import("root").sysinput;
 
 const api = sysinput.win32.api;
+const language_gate = sysinput.input.language_gate;
 
 pub const ModifierState = struct {
     shift: bool = false,
@@ -68,6 +69,7 @@ pub const KeyboardDecoder = struct {
         else
             0;
         const layout = api.GetKeyboardLayout(thread_id);
+        if (!language_gate.isEnglishLayout(layout)) return null;
 
         var utf16 = [_]api.WCHAR{0} ** 4;
         const translated = api.ToUnicodeEx(

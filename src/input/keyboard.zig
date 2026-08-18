@@ -8,10 +8,13 @@ const manager = sysinput.suggestion.manager;
 const debug = sysinput.core.debug;
 const key_decoder = sysinput.input.key_decoder;
 const prediction_worker = sysinput.suggestion.worker;
+const language_gate = sysinput.input.language_gate;
+const position = sysinput.ui.position;
 
 pub var g_hook: ?win32.HHOOK = null;
 var decoder = key_decoder.KeyboardDecoder{};
 var last_foreground_window: ?api.HWND = null;
+var last_input_english: ?bool = null;
 
 pub const SuggestionKeyAction = enum {
     previous,
@@ -51,6 +54,8 @@ pub fn suggestionKeyAction(
 }
 
 pub fn setupKeyboardHook() !win32.HHOOK {
+    last_foreground_window = null;
+    last_input_english = null;
     const hInstance = win32.GetModuleHandleA(null);
     const hook = win32.SetWindowsHookExA(win32.WH_KEYBOARD_LL, keyboardHookProc, hInstance, 0);
 
@@ -83,6 +88,8 @@ fn processSuggestionNavigation(kbd: *const win32.KBDLLHOOKSTRUCT) bool {
 }
 
 fn refreshSuggestions() void {
+    // A physical edit moves the caret; never reuse the prior display anchor.
+    position.invalidatePositionCache();
     const text = buffer_controller.getCurrentText();
     const word = buffer_controller.getCurrentWord() catch "";
     _ = prediction_worker.submitPrediction(text, word);
@@ -187,19 +194,30 @@ fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) ca
 
     const down = isKeyDown(wParam);
     const up = isKeyUp(wParam);
+    var modifier_event = false;
     if (down or up) {
-        if (decoder.observeModifier(kbd.vkCode, down)) {
-            return win32.CallNextHookEx(null, nCode, wParam, lParam);
-        }
+        modifier_event = decoder.observeModifier(kbd.vkCode, down);
     }
-    if (!down) return win32.CallNextHookEx(null, nCode, wParam, lParam);
 
     const foreground = api.GetForegroundWindow();
     if (foreground != last_foreground_window) {
         last_foreground_window = foreground;
         manager.hideSuggestions();
         buffer_controller.invalidatePhysicalInputState();
+        position.invalidatePositionCache();
+        last_input_english = null;
     }
+
+    // Observe both key-down and key-up so layout hotkeys hide an existing
+    // popup as soon as Windows completes the input-language switch.
+    const input_english = language_gate.isEnglishForWindow(foreground);
+    if (last_input_english == null or last_input_english.? != input_english) {
+        last_input_english = input_english;
+        manager.hideSuggestions();
+        buffer_controller.invalidatePhysicalInputState();
+        position.invalidatePositionCache();
+    }
+    if (!input_english or modifier_event or !down) return win32.CallNextHookEx(null, nCode, wParam, lParam);
 
     if (manager.isSuggestionUIVisible()) {
         switch (suggestionKeyAction(kbd.vkCode, decoder.modifiers, manager.runtimeSetting(.safe_arrow_mode))) {

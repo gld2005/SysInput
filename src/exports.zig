@@ -11,6 +11,7 @@ pub const core = struct {
 pub const input = struct {
     pub const keyboard = @import("input/keyboard.zig");
     pub const key_decoder = @import("input/key_decoder.zig");
+    pub const language_gate = @import("input/language_gate.zig");
     pub const text_field = @import("input/text_field.zig");
     pub const window_detection = @import("input/window_detection.zig");
 };

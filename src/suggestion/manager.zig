@@ -24,6 +24,7 @@ const runtime_settings = sysinput.core.runtime_settings;
 const app_guard = sysinput.win32.app_guard;
 const abbreviation = sysinput.text.abbreviation;
 const corpus = sysinput.text.corpus;
+const language_gate = sysinput.input.language_gate;
 
 const CandidateTextStorage = struct {
     display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
@@ -112,6 +113,7 @@ fn bindCandidateLease(version: u64, target: ?api.HWND) void {
 
 fn candidateLeaseIsCurrent() bool {
     const target = api.GetForegroundWindow();
+    if (!language_gate.isEnglishForWindow(target)) return false;
     const focus = api.getFocusedWindow();
     const caret = position.getCaretAnchor();
     if (!candidate_lease.matches(
@@ -200,6 +202,7 @@ pub fn computePrediction(
     request: *const prediction_worker.PredictionRequest,
     result: *prediction_worker.PredictionResult,
 ) !void {
+    if (!language_gate.isEnglishForWindow(request.target_window)) return;
     if (app_guard.evaluate(request.target_window).decision != .allowed) return;
     const settings = settings_store.snapshot();
     const target_id: usize = if (request.target_window) |window| @intFromPtr(window) else 0;
@@ -465,6 +468,11 @@ pub fn maintainPersonalProfile(force: bool) !void {
 /// stable manager storage before passing borrowed display slices to the UI.
 pub fn applyPrediction(result: *const prediction_worker.PredictionResult) void {
     if (!settings_store.isEnabled(.enabled)) {
+        hideSuggestions();
+        return;
+    }
+    if (!language_gate.isEnglishForWindow(result.target_window)) {
+        clearSuggestions();
         hideSuggestions();
         return;
     }
@@ -1125,6 +1133,7 @@ fn retainProgressiveRemainder(
     applied_text_len = @min(current_text.len, applied_text.len);
     @memcpy(applied_text[0..applied_text_len], current_text[0..applied_text_len]);
     applied_word_len = 0;
+    position.invalidatePositionCache();
     const caret = position.getCaretPosition();
     showSuggestions(applied_text[0..applied_text_len], "", caret.x, caret.y) catch |err| {
         debug.debugPrint("Failed to retain progressive remainder: {}\n", .{err});

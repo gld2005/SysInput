@@ -25,6 +25,8 @@ const application_exclusions = sysinput.core.application_exclusions;
 const app_guard = sysinput.win32.app_guard;
 const abbreviation = sysinput.text.abbreviation;
 const corpus = sysinput.text.corpus;
+const language_gate = sysinput.input.language_gate;
+const position = sysinput.ui.position;
 
 var worker_test_mutex = std.Thread.Mutex{};
 var worker_test_learned = false;
@@ -84,6 +86,64 @@ fn expectEqualStrings(expected: []const u8, actual: []const u8) BaselineTestErro
         std.debug.print("expected '{s}', got '{s}'\n", .{ expected, actual });
         return error.BaselineTestFailed;
     }
+}
+
+fn testEnglishInputLanguageGate() !void {
+    try expect(language_gate.isEnglishLanguageId(0x0409)); // English (United States)
+    try expect(language_gate.isEnglishLanguageId(0x0809)); // English (United Kingdom)
+    try expect(language_gate.isEnglishLanguageId(0x0c09)); // English (Australia)
+    try expect(!language_gate.isEnglishLanguageId(0x0804)); // Chinese (Simplified)
+    try expect(!language_gate.isEnglishLanguageId(0x0404)); // Chinese (Traditional)
+    try expect(!language_gate.isEnglishLanguageId(0x0411)); // Japanese
+    try expect(language_gate.languageIdFromLayoutValue(0x0000000004090409) == 0x0409);
+}
+
+fn testSafePopupPlacement() !void {
+    const work = api.RECT{ .left = 0, .top = 0, .right = 1920, .bottom = 1040 };
+    const below = position.calculatePopupPlacement(
+        .{ .left = 100, .top = 100, .right = 101, .bottom = 120 },
+        work,
+        .{ .width = 300, .height = 100 },
+        6,
+        10,
+    ) orelse return error.BaselineTestFailed;
+    try expect(below.x == 100 and below.y == 126);
+
+    const above = position.calculatePopupPlacement(
+        .{ .left = 100, .top = 950, .right = 101, .bottom = 970 },
+        work,
+        .{ .width = 300, .height = 100 },
+        6,
+        10,
+    ) orelse return error.BaselineTestFailed;
+    try expect(above.y == 844 and above.y + above.height < 950);
+
+    const left_monitor = api.RECT{ .left = -1920, .top = 0, .right = 0, .bottom = 1040 };
+    const clamped = position.calculatePopupPlacement(
+        .{ .left = -100, .top = 100, .right = -99, .bottom = 120 },
+        left_monitor,
+        .{ .width = 300, .height = 100 },
+        6,
+        10,
+    ) orelse return error.BaselineTestFailed;
+    try expect(clamped.x == -310);
+
+    const narrow = position.calculatePopupPlacement(
+        .{ .left = 100, .top = 20, .right = 101, .bottom = 40 },
+        .{ .left = 0, .top = 0, .right = 300, .bottom = 400 },
+        .{ .width = 500, .height = 100 },
+        6,
+        10,
+    ) orelse return error.BaselineTestFailed;
+    try expect(narrow.width == 280 and narrow.x == 10);
+
+    try expect(position.calculatePopupPlacement(
+        .{ .left = 50, .top = 80, .right = 51, .bottom = 120 },
+        .{ .left = 0, .top = 0, .right = 200, .bottom = 200 },
+        .{ .width = 100, .height = 70 },
+        6,
+        10,
+    ) == null);
 }
 
 fn freeSuggestions(allocator: std.mem.Allocator, suggestions: *std.ArrayList([]const u8)) void {
@@ -153,6 +213,14 @@ fn testActiveLayoutTranslation() !void {
     var event = std.mem.zeroes(api.KBDLLHOOKSTRUCT);
     event.vkCode = 'A';
     event.scanCode = 0x1E;
+
+    // The decoder is deliberately closed while the foreground thread owns a
+    // non-English layout. This also keeps the characterization deterministic
+    // when the test is launched while Microsoft Pinyin is active.
+    if (!language_gate.isEnglishForeground()) {
+        try expect(decoder.decodeEnglishAscii(&event) == null);
+        return;
+    }
 
     const plain = decoder.decodeEnglishAscii(&event) orelse return error.BaselineTestFailed;
     try expect(plain == 'a' or plain == 'A');
@@ -1180,6 +1248,8 @@ pub fn main() !void {
     try testProgressiveCandidateAcceptance();
     try testSafeSuggestionKeys();
     try testCandidateLease();
+    try testEnglishInputLanguageGate();
+    try testSafePopupPlacement();
     try testPredictionWorker();
     try testEditDistance();
     try testStatistics();
@@ -1192,5 +1262,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 44/44 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 46/46 checks passed\n");
 }

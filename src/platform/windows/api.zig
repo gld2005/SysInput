@@ -32,6 +32,7 @@ pub const HFONT = *anyopaque; // Font handle
 pub const HGDIOBJ = *anyopaque; // GDI object handle
 pub const HBRUSH = *anyopaque; // Brush handle
 pub const HKL = HANDLE; // Keyboard layout handle
+pub const HMONITOR = HANDLE;
 pub const HICON = HANDLE;
 pub const HMENU = HANDLE;
 pub const HKEY = HANDLE;
@@ -184,6 +185,7 @@ pub const SW_HIDE = 0;
 // System metrics constants
 pub const SM_CXSCREEN = 0;
 pub const SM_CYSCREEN = 1;
+pub const MONITOR_DEFAULTTONEAREST: DWORD = 0x00000002;
 
 // Text drawing constants
 pub const DT_LEFT = 0x00000000;
@@ -289,6 +291,13 @@ pub const RECT = extern struct {
     top: c_long,
     right: c_long,
     bottom: c_long,
+};
+
+pub const MONITORINFO = extern struct {
+    cbSize: DWORD,
+    rcMonitor: RECT,
+    rcWork: RECT,
+    dwFlags: DWORD,
 };
 
 // Paint structure
@@ -512,6 +521,9 @@ pub extern "user32" fn GetWindowRect(
     hWnd: HWND,
     lpRect: *RECT,
 ) callconv(.C) BOOL;
+pub extern "user32" fn MonitorFromRect(lprc: *const RECT, dwFlags: DWORD) callconv(.C) ?HMONITOR;
+pub extern "user32" fn GetMonitorInfoA(hMonitor: HMONITOR, lpmi: *MONITORINFO) callconv(.C) BOOL;
+pub extern "user32" fn GetDpiForWindow(hwnd: HWND) callconv(.C) UINT;
 
 pub extern "user32" fn SetWindowPos(
     hWnd: HWND,
@@ -612,6 +624,7 @@ pub extern "user32" fn SendInput(
 pub extern "user32" fn GetKeyboardState(lpKeyState: *[256]BYTE) callconv(.C) BOOL;
 pub extern "user32" fn GetKeyState(nVirtKey: c_int) callconv(.C) i16;
 pub extern "user32" fn GetKeyboardLayout(idThread: DWORD) callconv(.C) HKL;
+pub extern "user32" fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) callconv(.C) BOOL;
 pub extern "user32" fn ToUnicodeEx(
     wVirtKey: UINT,
     wScanCode: UINT,
