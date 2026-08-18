@@ -17,6 +17,7 @@ const app_guard = sysinput.win32.app_guard;
 const settings_window = sysinput.ui.settings_window;
 const abbreviation_window = sysinput.ui.abbreviation_window;
 const corpus_window = sysinput.ui.corpus_window;
+const appearance_window = sysinput.ui.appearance_window;
 
 /// General Purpose Allocator for dynamic memory
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -61,6 +62,7 @@ fn setStartupFromSettings(enabled: bool) bool {
 fn settingsChanged() void {
     app_guard.invalidateCache();
     manager.hideSuggestions();
+    manager.refreshAppearance();
     buffer_controller.invalidatePhysicalInputState();
 }
 
@@ -125,6 +127,8 @@ pub fn main() !void {
     defer abbreviation_window.deinit();
     try corpus_window.init(hInstance, manager.corpora());
     defer corpus_window.deinit();
+    try appearance_window.init(hInstance, &runtime_store, settingsChanged);
+    defer appearance_window.deinit();
 
     try settings_window.init(
         allocator,

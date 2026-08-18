@@ -23,6 +23,7 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("comdlg32");
         exe.linkSystemLibrary("ole32");
         exe.linkSystemLibrary("oleaut32");
+        exe.linkSystemLibrary("dwmapi");
         exe.linkLibC(); // Link C library for Windows API compatibility
     }
 
@@ -66,6 +67,7 @@ pub fn build(b: *std.Build) void {
         unit_tests.linkSystemLibrary("shell32");
         unit_tests.linkSystemLibrary("ole32");
         unit_tests.linkSystemLibrary("oleaut32");
+        unit_tests.linkSystemLibrary("dwmapi");
         unit_tests.linkLibC();
     }
 

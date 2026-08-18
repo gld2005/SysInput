@@ -27,6 +27,7 @@ const abbreviation = sysinput.text.abbreviation;
 const corpus = sysinput.text.corpus;
 const language_gate = sysinput.input.language_gate;
 const position = sysinput.ui.position;
+const appearance = sysinput.ui.appearance;
 
 var worker_test_mutex = std.Thread.Mutex{};
 var worker_test_learned = false;
@@ -144,6 +145,21 @@ fn testSafePopupPlacement() !void {
         6,
         10,
     ) == null);
+}
+
+fn testCandidateAppearance() !void {
+    const blue = appearance.rgb(0, 120, 212);
+    try expect(blue == 0x00d47800); // Win32 COLORREF is BGR, not web RGB.
+    const light = appearance.paletteFor(false, blue);
+    const dark = appearance.paletteFor(true, blue);
+    try expect(!light.dark and dark.dark);
+    try expect(light.surface != dark.surface and light.text != dark.text);
+    try expect(light.accent == blue and dark.accent == blue);
+    try expect(appearance.accentColor(.teal, 0) == appearance.rgb(0, 153, 153));
+    const compact = appearance.metricsFor(.compact);
+    const comfortable = appearance.metricsFor(.comfortable);
+    try expect(compact.row_height < comfortable.row_height);
+    try expect(compact.outer_padding < comfortable.outer_padding);
 }
 
 fn freeSuggestions(allocator: std.mem.Allocator, suggestions: *std.ArrayList([]const u8)) void {
@@ -440,6 +456,7 @@ fn testRuntimeSettings(allocator: std.mem.Allocator) !void {
     try expect(defaults.enabled and defaults.word_completion and defaults.safe_arrow_mode);
     try expect(!defaults.abbreviation_expansion and !defaults.corpus_prediction);
     try expect(!defaults.abbreviation_auto_expand and defaults.abbreviation_prefix == ';');
+    try expect(defaults.appearance.theme == .system and defaults.appearance.accent == .system and defaults.appearance.density == .compact);
 
     var legacy: [18]u8 = undefined;
     @memcpy(legacy[0..8], "SYSISET1");
@@ -466,6 +483,7 @@ fn testRuntimeSettings(allocator: std.mem.Allocator) !void {
     try store.setAndSave(.word_completion, false);
     try store.setAndSave(.abbreviation_auto_expand, true);
     try store.setAbbreviationPrefixAndSave('#');
+    try store.setAppearanceAndSave(.{ .theme = .dark, .accent = .teal, .density = .comfortable });
     try expect(!store.isEnabled(.word_completion));
 
     const reloaded_result = try runtime_settings.Store.initAt(allocator, root);
@@ -474,6 +492,8 @@ fn testRuntimeSettings(allocator: std.mem.Allocator) !void {
     try expect(reloaded_result.status == .loaded);
     try expect(!reloaded.isEnabled(.word_completion));
     try expect(reloaded.snapshot().abbreviation_auto_expand and reloaded.snapshot().abbreviation_prefix == '#');
+    const restored_appearance = reloaded.appearance();
+    try expect(restored_appearance.theme == .dark and restored_appearance.accent == .teal and restored_appearance.density == .comfortable);
     try reloaded.setAndSave(.word_completion, true);
     try expect(reloaded.isEnabled(.word_completion));
 
@@ -1250,6 +1270,7 @@ pub fn main() !void {
     try testCandidateLease();
     try testEnglishInputLanguageGate();
     try testSafePopupPlacement();
+    try testCandidateAppearance();
     try testPredictionWorker();
     try testEditDistance();
     try testStatistics();
@@ -1262,5 +1283,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 46/46 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 47/47 checks passed\n");
 }

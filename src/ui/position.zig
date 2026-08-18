@@ -34,7 +34,7 @@ const PositionCache = struct {
 
 var position_cache = PositionCache{};
 
-fn getDpiScaling(hwnd: ?api.HWND) f32 {
+pub fn dpiScaleForWindow(hwnd: ?api.HWND) f32 {
     if (hwnd) |window| {
         const dpi = api.GetDpiForWindow(window);
         if (dpi != 0) return @as(f32, @floatFromInt(dpi)) / config.UI.BASE_DPI;
@@ -44,14 +44,14 @@ fn getDpiScaling(hwnd: ?api.HWND) f32 {
     return @as(f32, @floatFromInt(api.GetDeviceCaps(hdc, api.LOGPIXELSY))) / config.UI.BASE_DPI;
 }
 
-fn scaled(value: i32, scale: f32) i32 {
+pub fn scaleValue(value: i32, scale: f32) i32 {
     return @max(1, @as(i32, @intFromFloat(@as(f32, @floatFromInt(value)) * scale)));
 }
 
 fn normalizeCaretRect(rect: api.RECT, focus: ?api.HWND) api.RECT {
     var result = rect;
     if (result.right <= result.left) result.right = result.left + 1;
-    if (result.bottom <= result.top) result.bottom = result.top + scaled(config.UI.SUGGESTION_FONT_HEIGHT, getDpiScaling(focus));
+    if (result.bottom <= result.top) result.bottom = result.top + scaleValue(config.UI.SUGGESTION_FONT_HEIGHT, dpiScaleForWindow(focus));
     return result;
 }
 
@@ -81,7 +81,7 @@ fn attachedCaretRect(focus: api.HWND, target_thread: api.DWORD) ?api.RECT {
 
     var point = api.POINT{ .x = 0, .y = 0 };
     if (api.GetCaretPos(&point) == 0 or api.ClientToScreen(focus, &point) == 0) return null;
-    const height = scaled(config.UI.SUGGESTION_FONT_HEIGHT, getDpiScaling(focus));
+    const height = scaleValue(config.UI.SUGGESTION_FONT_HEIGHT, dpiScaleForWindow(focus));
     return .{ .left = point.x, .top = point.y, .right = point.x + 1, .bottom = point.y + height };
 }
 
@@ -123,7 +123,7 @@ pub fn getCaretRect() ?api.RECT {
         .y = @as(i16, @bitCast(@as(u16, @truncate((position_bits >> 16) & 0xffff)))),
     };
     if (api.ClientToScreen(focus, &screen_point) == 0) return null;
-    const height = scaled(config.UI.SUGGESTION_FONT_HEIGHT, getDpiScaling(focus));
+    const height = scaleValue(config.UI.SUGGESTION_FONT_HEIGHT, dpiScaleForWindow(focus));
     const caret = api.RECT{
         .left = screen_point.x,
         .top = screen_point.y,
@@ -174,26 +174,33 @@ fn monitorWorkArea(caret: api.RECT) ?api.RECT {
 }
 
 pub fn placeSuggestionPopup(caret: api.RECT, requested: PopupSize) ?PopupPlacement {
-    const dpi_scale = getDpiScaling(api.getFocusedWindow());
+    const dpi_scale = dpiScaleForWindow(api.getFocusedWindow());
     const work_area = monitorWorkArea(caret) orelse return null;
-    return calculatePopupPlacement(caret, work_area, requested, scaled(6, dpi_scale), scaled(config.UI.SCREEN_EDGE_PADDING, dpi_scale));
+    return calculatePopupPlacement(caret, work_area, requested, scaleValue(6, dpi_scale), scaleValue(config.UI.SCREEN_EDGE_PADDING, dpi_scale));
 }
 
 pub fn invalidatePositionCache() void {
     position_cache.invalidate();
 }
 
-pub fn calculateSuggestionWindowSize(suggestions: [][]const u8, font_height: i32, padding: i32) PopupSize {
-    const dpi_scale = getDpiScaling(api.getFocusedWindow());
-    const scaled_font_height = scaled(font_height, dpi_scale);
-    const scaled_padding = scaled(padding, dpi_scale);
-    const line_height = scaled_font_height + scaled(4, dpi_scale);
-    const window_height = @as(i32, @intCast(suggestions.len)) * line_height + scaled_padding * 2;
+pub fn calculateSuggestionWindowSize(
+    suggestions: [][]const u8,
+    font_height: i32,
+    row_height: i32,
+    horizontal_padding: i32,
+    outer_padding: i32,
+) PopupSize {
+    const dpi_scale = dpiScaleForWindow(api.getFocusedWindow());
+    const scaled_font_height = scaleValue(font_height, dpi_scale);
+    const scaled_row_height = scaleValue(row_height, dpi_scale);
+    const scaled_horizontal_padding = scaleValue(horizontal_padding, dpi_scale);
+    const scaled_outer_padding = scaleValue(outer_padding, dpi_scale);
+    const window_height = @as(i32, @intCast(suggestions.len)) * scaled_row_height + scaled_outer_padding * 2;
 
-    var max_width: i32 = scaled(config.UI.DEFAULT_POPUP_WIDTH / 2, dpi_scale);
+    var max_width: i32 = scaleValue(config.UI.DEFAULT_POPUP_WIDTH / 2, dpi_scale);
     const average_character_width = @max(1, @as(i32, @intFromFloat(@as(f32, @floatFromInt(scaled_font_height)) * config.UI.AVG_CHAR_WIDTH_RATIO)));
     for (suggestions) |suggestion| {
-        const width = @as(i32, @intCast(suggestion.len)) * average_character_width + scaled_padding * 4;
+        const width = @as(i32, @intCast(suggestion.len)) * average_character_width + scaled_horizontal_padding * 2 + scaled_outer_padding * 2;
         max_width = @max(max_width, width);
     }
     return .{ .width = max_width, .height = window_height };

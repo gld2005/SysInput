@@ -33,6 +33,7 @@ pub const HGDIOBJ = *anyopaque; // GDI object handle
 pub const HBRUSH = *anyopaque; // Brush handle
 pub const HKL = HANDLE; // Keyboard layout handle
 pub const HMONITOR = HANDLE;
+pub const HBITMAP = HANDLE;
 pub const HICON = HANDLE;
 pub const HMENU = HANDLE;
 pub const HKEY = HANDLE;
@@ -48,6 +49,7 @@ pub const WM_CLOSE = 0x0010;
 pub const WM_PAINT = 0x000F;
 pub const WM_ERASEBKGND = 0x0014;
 pub const WM_COMMAND = 0x0111;
+pub const WM_SETTINGCHANGE = 0x001A;
 pub const WM_SETFONT = 0x0030;
 pub const WM_CONTEXTMENU = 0x007B;
 pub const WM_NULL = 0x0000;
@@ -145,6 +147,7 @@ pub const CW_USEDEFAULT: c_int = -2147483648;
 pub const BS_PUSHBUTTON = 0x00000000;
 pub const BS_AUTOCHECKBOX = 0x00000003;
 pub const BS_GROUPBOX = 0x00000007;
+pub const CBS_DROPDOWNLIST = 0x00000003;
 pub const BST_UNCHECKED = 0;
 pub const BST_CHECKED = 1;
 pub const BM_GETCHECK = 0x00F0;
@@ -155,6 +158,11 @@ pub const LB_RESETCONTENT = 0x0184;
 pub const LB_GETCURSEL = 0x0188;
 pub const LB_ERR: LRESULT = -1;
 pub const BN_CLICKED = 0;
+pub const CBN_SELCHANGE = 1;
+pub const CB_ADDSTRING = 0x0143;
+pub const CB_GETCURSEL = 0x0147;
+pub const CB_SETCURSEL = 0x014E;
+pub const CB_ERR: LRESULT = -1;
 pub const WS_EX_TOPMOST = 0x00000008;
 pub const WS_EX_TOOLWINDOW = 0x00000080;
 pub const WS_EX_NOACTIVATE = 0x08000000;
@@ -191,6 +199,7 @@ pub const MONITOR_DEFAULTTONEAREST: DWORD = 0x00000002;
 pub const DT_LEFT = 0x00000000;
 pub const DT_SINGLELINE = 0x00000020;
 pub const DT_VCENTER = 0x00000004;
+pub const DT_END_ELLIPSIS = 0x00008000;
 pub const TRANSPARENT = 1;
 
 // Drawing constants
@@ -218,6 +227,16 @@ pub const NULL_BRUSH = 5;
 pub const WHITE_PEN = 6;
 pub const BLACK_PEN = 7;
 pub const PS_SOLID = 0;
+pub const SRCCOPY: DWORD = 0x00CC0020;
+pub const SPI_GETHIGHCONTRAST: UINT = 0x0042;
+pub const HCF_HIGHCONTRASTON: DWORD = 0x00000001;
+pub const COLOR_WINDOW = 5;
+pub const COLOR_WINDOWTEXT = 8;
+pub const COLOR_HIGHLIGHT = 13;
+pub const COLOR_HIGHLIGHTTEXT = 14;
+pub const DWMWA_WINDOW_CORNER_PREFERENCE: DWORD = 33;
+pub const DWMWA_BORDER_COLOR: DWORD = 34;
+pub const DWMWCP_ROUND: DWORD = 2;
 
 // Cursor constants
 pub const IDC_ARROW = 32512;
@@ -298,6 +317,12 @@ pub const MONITORINFO = extern struct {
     rcMonitor: RECT,
     rcWork: RECT,
     dwFlags: DWORD,
+};
+
+pub const HIGHCONTRASTA = extern struct {
+    cbSize: UINT,
+    dwFlags: DWORD,
+    lpszDefaultScheme: ?[*:0]u8,
 };
 
 // Paint structure
@@ -524,6 +549,8 @@ pub extern "user32" fn GetWindowRect(
 pub extern "user32" fn MonitorFromRect(lprc: *const RECT, dwFlags: DWORD) callconv(.C) ?HMONITOR;
 pub extern "user32" fn GetMonitorInfoA(hMonitor: HMONITOR, lpmi: *MONITORINFO) callconv(.C) BOOL;
 pub extern "user32" fn GetDpiForWindow(hwnd: HWND) callconv(.C) UINT;
+pub extern "user32" fn GetSysColor(nIndex: c_int) callconv(.C) DWORD;
+pub extern "user32" fn SystemParametersInfoA(uiAction: UINT, uiParam: UINT, pvParam: ?*anyopaque, fWinIni: UINT) callconv(.C) BOOL;
 
 pub extern "user32" fn SetWindowPos(
     hWnd: HWND,
@@ -609,6 +636,10 @@ pub extern "gdi32" fn RoundRect(
     width: c_int,
     height: c_int,
 ) callconv(.C) BOOL;
+pub extern "gdi32" fn CreateCompatibleDC(hdc: HDC) callconv(.C) ?HDC;
+pub extern "gdi32" fn CreateCompatibleBitmap(hdc: HDC, cx: c_int, cy: c_int) callconv(.C) ?HBITMAP;
+pub extern "gdi32" fn DeleteDC(hdc: HDC) callconv(.C) BOOL;
+pub extern "gdi32" fn BitBlt(hdc: HDC, x: c_int, y: c_int, cx: c_int, cy: c_int, hdcSrc: HDC, x1: c_int, y1: c_int, rop: DWORD) callconv(.C) BOOL;
 
 //=============================================================================
 // INPUT AND CURSOR FUNCTIONS
@@ -824,6 +855,8 @@ pub extern "advapi32" fn RegSetValueExA(hKey: HKEY, lpValueName: [*:0]const u8, 
 pub extern "advapi32" fn RegQueryValueExA(hKey: HKEY, lpValueName: [*:0]const u8, lpReserved: ?*DWORD, lpType: ?*DWORD, lpData: ?[*]u8, lpcbData: ?*DWORD) callconv(.C) LONG;
 pub extern "advapi32" fn RegDeleteValueA(hKey: HKEY, lpValueName: [*:0]const u8) callconv(.C) LONG;
 pub extern "advapi32" fn RegCloseKey(hKey: HKEY) callconv(.C) LONG;
+pub extern "dwmapi" fn DwmGetColorizationColor(pcrColorization: *DWORD, pfOpaqueBlend: *BOOL) callconv(.C) HRESULT;
+pub extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: DWORD, pvAttribute: *const anyopaque, cbAttribute: DWORD) callconv(.C) HRESULT;
 pub extern "advapi32" fn OpenProcessToken(ProcessHandle: HANDLE, DesiredAccess: DWORD, TokenHandle: *HANDLE) callconv(.C) BOOL;
 pub extern "advapi32" fn GetTokenInformation(TokenHandle: HANDLE, TokenInformationClass: c_int, TokenInformation: *anyopaque, TokenInformationLength: DWORD, ReturnLength: *DWORD) callconv(.C) BOOL;
 pub extern "advapi32" fn GetSidSubAuthorityCount(pSid: *anyopaque) callconv(.C) ?*u8;

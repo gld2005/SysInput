@@ -89,10 +89,13 @@ pub const AutocompleteUI = struct {
         }
 
         const caret = position.getCaretRect() orelse return error.CaretUnavailable;
+        const metrics = window.currentMetrics();
         const size = position.calculateSuggestionWindowSize(
             self.suggestions,
-            config.UI.SUGGESTION_FONT_HEIGHT,
-            sysinput.ui.window.WINDOW_PADDING,
+            metrics.font_height,
+            metrics.row_height,
+            metrics.horizontal_padding,
+            metrics.outer_padding,
         );
         const placement = position.placeSuggestionPopup(caret, size) orelse return error.NoSafePopupPlacement;
         debug.debugPrint("Showing suggestion UI at {}, {}\n", .{ placement.x, placement.y });
@@ -154,6 +157,14 @@ pub const AutocompleteUI = struct {
         // Hide the UI window if it exists
         if (self.suggestion_window != null) {
             _ = api.ShowWindow(self.suggestion_window.?, api.SW_HIDE);
+        }
+    }
+
+    pub fn applyAppearance(self: *AutocompleteUI, value: sysinput.core.runtime_settings.Appearance) void {
+        window.setAppearance(value);
+        if (self.suggestion_window) |handle| {
+            window.refreshWindowAppearance(handle);
+            if (self.is_visible) self.showSuggestionUI(0, 0) catch self.hideSuggestions();
         }
     }
 

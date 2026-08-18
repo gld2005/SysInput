@@ -187,6 +187,7 @@ pub fn init(
 
     // Initialize UI
     autocomplete_ui_manager = try suggestion_ui.AutocompleteUI.init(allocator, module_instance);
+    autocomplete_ui_manager.applyAppearance(settings_store.appearance());
 
     suggestion_window.setSuggestionClickCallback(handleSuggestionClick);
 
@@ -547,6 +548,10 @@ pub fn applyPrediction(result: *const prediction_worker.PredictionResult) void {
 
 pub fn runtimeSetting(feature: runtime_settings.Feature) bool {
     return settings_store.isEnabled(feature);
+}
+
+pub fn refreshAppearance() void {
+    autocomplete_ui_manager.applyAppearance(settings_store.appearance());
 }
 
 fn firstPredictedWord(text: []const u8) []const u8 {

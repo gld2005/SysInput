@@ -6,6 +6,7 @@ const runtime_settings = sysinput.core.runtime_settings;
 const exclusions = sysinput.core.application_exclusions;
 const abbreviation_window = sysinput.ui.abbreviation_window;
 const corpus_window = sysinput.ui.corpus_window;
+const appearance_window = sysinput.ui.appearance_window;
 
 const WINDOW_CLASS = "SysInputSettingsWindow";
 const WINDOW_TITLE = "SysInput Settings";
@@ -31,6 +32,7 @@ const ID_ADD_CURRENT = 2031;
 const ID_BROWSE = 2032;
 const ID_TOGGLE_APP = 2033;
 const ID_REMOVE_APP = 2034;
+const ID_APPEARANCE = 2035;
 
 pub const Callbacks = struct {
     set_enabled: *const fn (bool) bool,
@@ -175,6 +177,7 @@ fn createControls(parent: api.HWND) !void {
 
     _ = try createControl("BUTTON", "Keyboard", api.BS_GROUPBOX, 16, 132, 350, 90, parent, 0);
     controls[7] = try createControl("BUTTON", "Safe arrow mode (recommended)", api.BS_AUTOCHECKBOX | api.WS_TABSTOP, 32, 162, 300, 24, parent, ID_SAFE_ARROWS);
+    _ = try createControl("BUTTON", "Candidate appearance...", api.BS_PUSHBUTTON | api.WS_TABSTOP, 32, 190, 180, 26, parent, ID_APPEARANCE);
 
     _ = try createControl("BUTTON", "Abbreviations", api.BS_GROUPBOX, 16, 232, 350, 66, parent, 0);
     controls[8] = try createControl("BUTTON", "Enable abbreviation expansion", api.BS_AUTOCHECKBOX | api.WS_TABSTOP, 32, 254, 220, 24, parent, ID_ABBREVIATIONS);
@@ -360,6 +363,7 @@ fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: a
                     ID_ENABLED, ID_STARTUP, ID_WORD, ID_NEXT, ID_PHRASE, ID_SENTENCE, ID_LEARNING, ID_SAFE_ARROWS, ID_ABBREVIATIONS, ID_AUTO_ABBREVIATIONS, ID_CORPUS => handleCheckbox(id),
                     ID_MANAGE_ABBREVIATIONS => abbreviation_window.show(),
                     ID_MANAGE_CORPUS => corpus_window.show(),
+                    ID_APPEARANCE => appearance_window.show(),
                     ID_SET_PREFIX => setAbbreviationPrefix(),
                     ID_ADD_CURRENT => addCurrentApplication(),
                     ID_BROWSE => browseApplication(),

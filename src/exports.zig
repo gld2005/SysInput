@@ -37,10 +37,12 @@ pub const text = struct {
 };
 
 pub const ui = struct {
+    pub const appearance = @import("ui/appearance.zig");
     pub const position = @import("ui/position.zig");
     pub const suggestion_ui = @import("ui/suggestion_ui.zig");
     pub const window = @import("ui/window.zig");
     pub const settings_window = @import("ui/settings_window.zig");
+    pub const appearance_window = @import("ui/appearance_window.zig");
     pub const abbreviation_window = @import("ui/abbreviation_window.zig");
     pub const corpus_window = @import("ui/corpus_window.zig");
 };
