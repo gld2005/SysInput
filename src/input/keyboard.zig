@@ -7,6 +7,7 @@ const buffer_controller = sysinput.core.buffer_controller;
 const manager = sysinput.suggestion.manager;
 const debug = sysinput.core.debug;
 const key_decoder = sysinput.input.key_decoder;
+const prediction_worker = sysinput.suggestion.worker;
 
 pub var g_hook: ?win32.HHOOK = null;
 var decoder = key_decoder.KeyboardDecoder{};
@@ -45,7 +46,9 @@ fn processSuggestionNavigation(kbd: *const win32.KBDLLHOOKSTRUCT) win32.LRESULT 
 }
 
 fn refreshSuggestions() void {
-    buffer_controller.printBufferState();
+    const text = buffer_controller.getCurrentText();
+    const word = buffer_controller.getCurrentWord() catch "";
+    _ = prediction_worker.submitPrediction(text, word);
 }
 
 fn processCtrlBackspace(kbd: *const win32.KBDLLHOOKSTRUCT) bool {
@@ -182,6 +185,10 @@ pub fn messageLoop() !void {
     var msg: win32.MSG = undefined;
 
     while (win32.GetMessageA(&msg, null, 0, 0) > 0) {
+        if (msg.message == prediction_worker.WM_PREDICTION_READY) {
+            prediction_worker.dispatchReady();
+            continue;
+        }
         _ = win32.TranslateMessage(&msg);
         _ = win32.DispatchMessageA(&msg);
     }

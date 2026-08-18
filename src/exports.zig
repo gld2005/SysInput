@@ -14,6 +14,7 @@ pub const input = struct {
 
 pub const suggestion = struct {
     pub const candidate = @import("suggestion/candidate.zig");
+    pub const worker = @import("suggestion/worker.zig");
     pub const manager = @import("suggestion/manager.zig");
     pub const stats = @import("suggestion/stats.zig");
 };

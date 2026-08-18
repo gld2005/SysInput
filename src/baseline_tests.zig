@@ -12,6 +12,40 @@ const stats = sysinput.suggestion.stats;
 const key_decoder = sysinput.input.key_decoder;
 const api = sysinput.win32.api;
 const candidate_model = sysinput.suggestion.candidate;
+const prediction_worker = sysinput.suggestion.worker;
+
+var worker_test_mutex = std.Thread.Mutex{};
+var worker_test_learned = false;
+var worker_test_delivered_version: u64 = 0;
+var worker_test_delivered_word: [32]u8 = undefined;
+var worker_test_delivered_word_len: usize = 0;
+
+fn testWorkerCompute(
+    request: *const prediction_worker.PredictionRequest,
+    result: *prediction_worker.PredictionResult,
+) !void {
+    var candidate = try candidate_model.Candidate.wordCompletion(
+        "completion",
+        request.word_len,
+        .dictionary,
+        1,
+        500,
+    );
+    if (!result.addCandidate(&candidate)) return error.BaselineTestFailed;
+}
+
+fn testWorkerDeliver(result: *const prediction_worker.PredictionResult) void {
+    worker_test_delivered_version = result.version;
+    const word = result.wordSlice();
+    worker_test_delivered_word_len = @min(word.len, worker_test_delivered_word.len);
+    @memcpy(worker_test_delivered_word[0..worker_test_delivered_word_len], word[0..worker_test_delivered_word_len]);
+}
+
+fn testWorkerLearn(word: []const u8) !void {
+    worker_test_mutex.lock();
+    defer worker_test_mutex.unlock();
+    worker_test_learned = std.mem.eql(u8, word, "accepted");
+}
 
 const BaselineTestError = error{BaselineTestFailed};
 
@@ -138,6 +172,59 @@ fn testStructuredCandidates() !void {
     try expectEqualStrings(" if you", phrase.currentChunkText());
 }
 
+fn testPredictionWorker() !void {
+    var request = prediction_worker.PredictionRequest{};
+    request.set(42, "hello world", "wor");
+    try expect(request.version == 42);
+    try expectEqualStrings("hello world", request.textSlice());
+    try expectEqualStrings("wor", request.wordSlice());
+
+    worker_test_mutex.lock();
+    worker_test_learned = false;
+    worker_test_mutex.unlock();
+    worker_test_delivered_version = 0;
+    worker_test_delivered_word_len = 0;
+
+    try prediction_worker.init(testWorkerCompute, testWorkerDeliver, testWorkerLearn);
+    defer prediction_worker.deinit();
+
+    _ = prediction_worker.submitPrediction("hello", "hel");
+
+    const submit_count: usize = 10_000;
+    var submit_timer = try std.time.Timer.start();
+    var latest: u64 = 0;
+    for (0..submit_count) |_| {
+        latest = prediction_worker.submitPrediction("hello world", "wor");
+    }
+    const submit_ns = submit_timer.read();
+    std.debug.print(
+        "Prediction worker hook-submit average: {d:.3} us ({d} submissions)\n",
+        .{
+            @as(f64, @floatFromInt(submit_ns / submit_count)) / std.time.ns_per_us,
+            submit_count,
+        },
+    );
+    prediction_worker.submitLearnedWord("accepted");
+
+    var timer = try std.time.Timer.start();
+    while (timer.read() < std.time.ns_per_s) {
+        prediction_worker.dispatchReady();
+
+        worker_test_mutex.lock();
+        const learned = worker_test_learned;
+        worker_test_mutex.unlock();
+        if (worker_test_delivered_version == latest and learned) break;
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+
+    try expect(worker_test_delivered_version == latest);
+    try expectEqualStrings("wor", worker_test_delivered_word[0..worker_test_delivered_word_len]);
+    worker_test_mutex.lock();
+    const learned = worker_test_learned;
+    worker_test_mutex.unlock();
+    try expect(learned);
+}
+
 fn testEditDistance() !void {
     try expect(edit_distance.enhancedEditDistance("test", "test") == 0);
     // Characterize the current early-exit behavior. Although the implementation
@@ -235,6 +322,7 @@ pub fn main() !void {
     try testKeyboardEventClassification();
     try testActiveLayoutTranslation();
     try testStructuredCandidates();
+    try testPredictionWorker();
     try testEditDistance();
     try testStatistics();
 
@@ -246,5 +334,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 11/11 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 12/12 checks passed\n");
 }

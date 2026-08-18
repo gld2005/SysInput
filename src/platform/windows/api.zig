@@ -44,6 +44,7 @@ pub const WM_CLOSE = 0x0010;
 pub const WM_PAINT = 0x000F;
 pub const WM_ERASEBKGND = 0x0014;
 pub const WM_USER = 0x0400;
+pub const WM_APP = 0x8000;
 
 // Input-related Window Messages
 pub const WM_KEYDOWN = 0x0100;
@@ -401,6 +402,7 @@ pub extern "user32" fn GetFocus() callconv(.C) ?HWND;
 
 pub extern "user32" fn SendMessageA(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.C) LRESULT;
 pub extern "user32" fn PostMessageA(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.C) BOOL;
+pub extern "user32" fn PostThreadMessageA(idThread: DWORD, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.C) BOOL;
 
 pub extern "user32" fn SetLayeredWindowAttributes(
     hwnd: HWND,
@@ -595,6 +597,7 @@ pub extern "user32" fn GetSystemMetrics(
 
 // Miscellaneous utility functions
 pub extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.C) void;
+pub extern "kernel32" fn GetCurrentThreadId() callconv(.C) DWORD;
 pub extern "kernel32" fn lstrlenA(lpString: ?*const anyopaque) callconv(.C) c_int;
 
 // Helper functions

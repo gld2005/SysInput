@@ -13,6 +13,12 @@ const window_detection = sysinput.input.window_detection;
 const stats = sysinput.suggestion.stats;
 const config = sysinput.core.config;
 const candidate_model = sysinput.suggestion.candidate;
+const prediction_worker = sysinput.suggestion.worker;
+
+const CandidateTextStorage = struct {
+    display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
+    insert: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
+};
 
 /// Global variables for allocator access
 var gpa_allocator: std.mem.Allocator = undefined;
@@ -29,79 +35,24 @@ pub var autocomplete_engine: autocomplete.AutocompleteEngine = undefined;
 /// List for storing word suggestions
 pub var suggestions: std.ArrayList([]const u8) = undefined;
 
-/// Raw strings owned by the autocomplete engine result contract.
-var raw_autocomplete_suggestions: std.ArrayList([]const u8) = undefined;
-
 /// Structured candidates are the primary internal representation.
 pub var autocomplete_candidates: std.ArrayList(candidate_model.Candidate) = undefined;
 
 /// Borrowed display-text adapter retained for the existing UI.
 pub var autocomplete_suggestions: std.ArrayList([]const u8) = undefined;
+var candidate_text_storage: [config.TEXT.MAX_SUGGESTIONS]CandidateTextStorage = undefined;
+var applied_text: [config.TEXT.MAX_BUFFER_SIZE]u8 = undefined;
+var applied_text_len: usize = 0;
+var applied_word: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+var applied_word_len: usize = 0;
+var latest_applied_version: u64 = 0;
 
 /// Global UI for autocompletion suggestions
 pub var autocomplete_ui_manager: suggestion_ui.AutocompleteUI = undefined;
 
-/// Last word processed for suggestions
-pub var last_word: [256]u8 = undefined;
-pub var last_word_len: usize = 0;
-
 pub fn clearSuggestions() void {
     autocomplete_candidates.clearRetainingCapacity();
     autocomplete_suggestions.clearRetainingCapacity();
-    for (raw_autocomplete_suggestions.items) |item| gpa_allocator.free(item);
-    raw_autocomplete_suggestions.clearRetainingCapacity();
-}
-
-// Update getAutocompleteSuggestions
-pub fn getAutocompleteSuggestions() !void {
-    // Get current word
-    const current_word = autocomplete_engine.current_word;
-
-    // Skip processing if the word hasn't changed
-    if (current_word.len > 0 and current_word.len == last_word_len and
-        std.mem.eql(u8, current_word, last_word[0..last_word_len]) and
-        autocomplete_candidates.items.len > 0)
-    {
-        return error.NoSuggestionsNeeded;
-    }
-
-    // Store current word for next comparison
-    if (current_word.len > 0 and current_word.len < last_word.len) {
-        @memcpy(last_word[0..current_word.len], current_word);
-        last_word_len = current_word.len;
-    } else {
-        // Too long or empty
-        last_word_len = 0;
-    }
-
-    // Clear suggestions by recreating the list
-    clearSuggestions();
-
-    // Generate legacy word strings, then immediately describe them with the
-    // structured model. The UI receives only a borrowed display adapter.
-    try autocomplete_engine.getSuggestions(&raw_autocomplete_suggestions);
-    for (raw_autocomplete_suggestions.items) |text| {
-        const personal_frequency = autocomplete_engine.user_words.get(text);
-        const source: candidate_model.CandidateSource = if (personal_frequency != null)
-            .personal_frequency
-        else
-            .dictionary;
-        const score: i32 = if (personal_frequency) |frequency|
-            @intCast(@min(frequency, @as(u32, std.math.maxInt(i32))))
-        else
-            0;
-        const confidence: u16 = if (personal_frequency != null) 700 else 500;
-
-        const structured = try candidate_model.Candidate.wordCompletion(
-            text,
-            current_word.len,
-            source,
-            score,
-            confidence,
-        );
-        try autocomplete_candidates.append(structured);
-        try autocomplete_suggestions.append(structured.display_text);
-    }
 }
 
 /// Initialize suggestion handling components
@@ -113,9 +64,10 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
 
     // Initialize suggestions lists
     suggestions = std.ArrayList([]const u8).init(allocator);
-    raw_autocomplete_suggestions = std.ArrayList([]const u8).init(allocator);
     autocomplete_candidates = std.ArrayList(candidate_model.Candidate).init(allocator);
     autocomplete_suggestions = std.ArrayList([]const u8).init(allocator);
+    try autocomplete_candidates.ensureTotalCapacity(config.TEXT.MAX_SUGGESTIONS);
+    try autocomplete_suggestions.ensureTotalCapacity(config.TEXT.MAX_SUGGESTIONS);
 
     // Initialize autocompletion engine
     autocomplete_engine = try autocomplete.AutocompleteEngine.init(allocator, &spell_checker.dictionary);
@@ -128,16 +80,104 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
 
     // Reset stats
     stats_instance = sysinput.suggestion.stats.init();
+    latest_applied_version = 0;
 }
 
-/// Process a text for autocomplete suggestions
-pub fn processTextForSuggestions(text: []const u8) !void {
-    try autocomplete_engine.processText(text);
+/// Runs only on the prediction worker. The engine and in-memory frequency map
+/// are confined to that thread after worker startup.
+pub fn computePrediction(
+    request: *const prediction_worker.PredictionRequest,
+    result: *prediction_worker.PredictionResult,
+) !void {
+    try autocomplete_engine.processText(request.textSlice());
+    autocomplete_engine.setCurrentWord(request.wordSlice());
+    defer autocomplete_engine.setCurrentWord("");
+
+    var generated = std.ArrayList([]const u8).init(gpa_allocator);
+    defer {
+        for (generated.items) |item| gpa_allocator.free(item);
+        generated.deinit();
+    }
+    try autocomplete_engine.getSuggestions(&generated);
+
+    for (generated.items) |text| {
+        const personal_frequency = autocomplete_engine.user_words.get(text);
+        const source: candidate_model.CandidateSource = if (personal_frequency != null)
+            .personal_frequency
+        else
+            .dictionary;
+        const score: i32 = if (personal_frequency) |frequency|
+            @intCast(@min(frequency, @as(u32, std.math.maxInt(i32))))
+        else
+            0;
+        const confidence: u16 = if (personal_frequency != null) 700 else 500;
+        var structured = try candidate_model.Candidate.wordCompletion(
+            text,
+            request.word_len,
+            source,
+            score,
+            confidence,
+        );
+        if (!result.addCandidate(&structured)) break;
+    }
 }
 
-/// Set current word for autocompletion
-pub fn setCurrentWord(word: []const u8) void {
-    autocomplete_engine.setCurrentWord(word);
+/// Runs on the worker for accepted-word learning, never in the keyboard hook.
+pub fn learnAcceptedWord(word: []const u8) !void {
+    try autocomplete_engine.completeWord(word);
+}
+
+/// Runs on the Windows message thread. It copies the fixed worker result into
+/// stable manager storage before passing borrowed display slices to the UI.
+pub fn applyPrediction(result: *const prediction_worker.PredictionResult) void {
+    if (result.version <= latest_applied_version) return;
+    latest_applied_version = result.version;
+
+    // A result must never follow the user into another application while the
+    // worker is finishing an older request.
+    if (result.target_window != api.GetForegroundWindow()) {
+        clearSuggestions();
+        hideSuggestions();
+        return;
+    }
+
+    clearSuggestions();
+    applied_text_len = result.text_len;
+    applied_word_len = result.word_len;
+    @memcpy(applied_text[0..applied_text_len], result.textSlice());
+    @memcpy(applied_word[0..applied_word_len], result.wordSlice());
+
+    for (result.candidates[0..result.candidate_count], 0..) |*record, index| {
+        const display = record.displaySlice();
+        const insert = record.insertSlice();
+        @memcpy(candidate_text_storage[index].display[0..display.len], display);
+        @memcpy(candidate_text_storage[index].insert[0..insert.len], insert);
+
+        var structured = candidate_model.Candidate.init(
+            record.kind,
+            record.source,
+            candidate_text_storage[index].display[0..display.len],
+            candidate_text_storage[index].insert[0..insert.len],
+            record.replace_length,
+            record.score,
+            record.confidence,
+        ) catch continue;
+        structured.chunk_count = record.chunk_count;
+        structured.active_chunk = record.active_chunk;
+        @memcpy(structured.chunks[0..record.chunk_count], record.chunks[0..record.chunk_count]);
+        if (!structured.isValid()) continue;
+
+        autocomplete_candidates.appendAssumeCapacity(structured);
+        autocomplete_suggestions.appendAssumeCapacity(structured.display_text);
+    }
+
+    const text = applied_text[0..applied_text_len];
+    const word = applied_word[0..applied_word_len];
+    const caret = position.getCaretPosition();
+    showSuggestions(text, word, caret.x, caret.y) catch |err| {
+        debug.debugPrint("Failed to apply worker prediction: {}\n", .{err});
+        hideSuggestions();
+    };
 }
 
 /// Check if a word is spelled correctly
@@ -332,7 +372,7 @@ pub fn replaceSuggestionWord(current_word: []const u8, suggestion: []const u8) b
                 resyncBufferWithTextField();
 
                 // Add to autocomplete engine
-                autocomplete_engine.completeWord(suggestion) catch {};
+                prediction_worker.submitLearnedWord(suggestion);
 
                 debug.debugPrint("Key simulation completed\n", .{});
                 success = true;
@@ -368,9 +408,7 @@ pub fn replaceSuggestionWord(current_word: []const u8, suggestion: []const u8) b
         };
 
         // Add to autocomplete engine
-        autocomplete_engine.completeWord(suggestion) catch |err| {
-            debug.debugPrint("Error adding word to autocomplete: {}\n", .{err});
-        };
+        prediction_worker.submitLearnedWord(suggestion);
 
         debug.debugPrint("Backspace-and-type approach succeeded\n", .{});
         success = true;
@@ -553,9 +591,7 @@ pub fn acceptCurrentSuggestion() void {
 
         // Add to vocabulary if learning is enabled
         if (config.BEHAVIOR.LEARN_FROM_ACCEPTED) {
-            autocomplete_engine.completeWord(suggestion) catch |err| {
-                debug.debugPrint("Error adding to vocabulary: {}\n", .{err});
-            };
+            prediction_worker.submitLearnedWord(suggestion);
         }
 
         // Update stats if enabled
@@ -648,17 +684,11 @@ pub fn getSuggestionCount() usize {
     return autocomplete_candidates.items.len;
 }
 
-/// Add a word to the autocompletion engine's vocabulary
-pub fn addWordToVocabulary(word: []const u8) !void {
-    try autocomplete_engine.addWord(word);
-}
-
 /// Deinitialize components
 pub fn deinit() void {
     // Free resources
     clearSuggestions();
     suggestions.deinit();
-    raw_autocomplete_suggestions.deinit();
     autocomplete_candidates.deinit();
     autocomplete_suggestions.deinit();
 

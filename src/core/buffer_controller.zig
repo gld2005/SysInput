@@ -4,7 +4,6 @@ const sysinput = @import("root").sysinput;
 const buffer = sysinput.core.buffer;
 const api = sysinput.win32.api;
 const detection = sysinput.input.text_field;
-const manager = sysinput.suggestion.manager;
 const debug = sysinput.core.debug;
 const text_inject = sysinput.win32.text_inject;
 
@@ -265,48 +264,6 @@ pub fn printBufferState() void {
     debug.debugPrint("Current word: \"", .{});
     printEscaped(word);
     debug.debugPrint("\"\n", .{});
-
-    // Process text through suggestion handler
-    manager.processTextForSuggestions(content) catch |err| {
-        debug.debugPrint("Error processing text for autocompletion: {}\n", .{err});
-    };
-
-    // Set current word and get suggestions
-    manager.setCurrentWord(word);
-    manager.getAutocompleteSuggestions() catch |err| {
-        debug.debugPrint("Error getting autocompletion suggestions: {}\n", .{err});
-    };
-
-    // Show suggestions if needed
-    const pos = sysinput.ui.position.getCaretPosition();
-    manager.showSuggestions(content, word, pos.x, pos.y) catch |err| {
-        debug.debugPrint("Error applying suggestions: {}\n", .{err});
-    };
-    // Check spelling
-    if (word.len >= 2) {
-        if (!manager.isWordCorrect(word)) {
-            // Safely print the word that has a spelling error
-            debug.debugPrint("Spelling error detected: \"", .{});
-            for (word) |c| {
-                if (std.ascii.isPrint(c)) {
-                    debug.debugPrint("{c}", .{c});
-                } else {
-                    debug.debugPrint("\\x{X:0>2}", .{c});
-                }
-            }
-            debug.debugPrint("\"\n", .{});
-
-            // Get spelling suggestions if word isn't too long
-            if (word.len < 15) {
-                manager.getSpellingSuggestions(word) catch |err| {
-                    debug.debugPrint("Error getting suggestions: {}\n", .{err});
-                    return;
-                };
-
-                // Spelling suggestions will be printed by the suggestion handler
-            }
-        }
-    }
 }
 
 /// Insert a string into the buffer

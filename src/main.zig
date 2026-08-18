@@ -5,6 +5,7 @@ const keyboard = sysinput.input.keyboard;
 const buffer = sysinput.core.buffer;
 const buffer_controller = sysinput.core.buffer_controller;
 const manager = sysinput.suggestion.manager;
+const prediction_worker = sysinput.suggestion.worker;
 const win32 = sysinput.win32.hook;
 const debug = sysinput.core.debug;
 const edit_distance = sysinput.text.edit_distance;
@@ -26,6 +27,11 @@ pub fn main() !void {
     // Initialize suggestion handler
     try manager.init(allocator, hInstance);
     defer manager.deinit();
+
+    // Start the bounded prediction worker before the hook begins submitting
+    // snapshots. Registered after manager so it is stopped first on shutdown.
+    try prediction_worker.init(manager.computePrediction, manager.applyPrediction, manager.learnAcceptedWord);
+    defer prediction_worker.deinit();
 
     debug.debugPrint("Starting SysInput...\n", .{});
 
