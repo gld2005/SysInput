@@ -327,6 +327,12 @@ pub fn recordInjectedText(text: []const u8) !void {
     try buffer_manager.insertString(text);
 }
 
+/// Mirrors an already-completed replacement in the shadow buffer only.
+pub fn recordInjectedReplacement(replace_length: usize, text: []const u8) !void {
+    for (0..replace_length) |_| try buffer_manager.processBackspace();
+    try buffer_manager.insertString(text);
+}
+
 pub fn recordPhysicalBackspace() !void {
     try buffer_manager.processBackspace();
 }

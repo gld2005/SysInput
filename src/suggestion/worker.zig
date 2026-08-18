@@ -93,6 +93,12 @@ pub const PredictionResult = struct {
     word_len: u16 = 0,
     candidates: [config.TEXT.MAX_SUGGESTIONS]ResultCandidate = undefined,
     candidate_count: u8 = 0,
+    automatic_abbreviation: bool = false,
+    automatic_trigger: [32]u8 = undefined,
+    automatic_trigger_len: u8 = 0,
+    automatic_expansion: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
+    automatic_expansion_len: u16 = 0,
+    automatic_replace_length: u16 = 0,
 
     pub fn resetFromRequest(self: *PredictionResult, request: *const PredictionRequest) void {
         self.version = request.version;
@@ -102,6 +108,21 @@ pub const PredictionResult = struct {
         @memcpy(self.text[0..request.text_len], request.textSlice());
         @memcpy(self.word[0..request.word_len], request.wordSlice());
         self.candidate_count = 0;
+        self.automatic_abbreviation = false;
+        self.automatic_trigger_len = 0;
+        self.automatic_expansion_len = 0;
+        self.automatic_replace_length = 0;
+    }
+
+    pub fn setAutomaticAbbreviation(self: *PredictionResult, trigger: []const u8, expansion: []const u8, replace_length: usize) bool {
+        if (trigger.len > self.automatic_trigger.len or expansion.len > self.automatic_expansion.len or replace_length > std.math.maxInt(u16)) return false;
+        @memcpy(self.automatic_trigger[0..trigger.len], trigger);
+        @memcpy(self.automatic_expansion[0..expansion.len], expansion);
+        self.automatic_trigger_len = @intCast(trigger.len);
+        self.automatic_expansion_len = @intCast(expansion.len);
+        self.automatic_replace_length = @intCast(replace_length);
+        self.automatic_abbreviation = true;
+        return true;
     }
 
     pub fn addCandidate(self: *PredictionResult, candidate: *const candidate_model.Candidate) bool {

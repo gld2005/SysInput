@@ -4,6 +4,7 @@ const sysinput = @import("root").sysinput;
 const api = sysinput.win32.api;
 const runtime_settings = sysinput.core.runtime_settings;
 const exclusions = sysinput.core.application_exclusions;
+const abbreviation_window = sysinput.ui.abbreviation_window;
 
 const WINDOW_CLASS = "SysInputSettingsWindow";
 const WINDOW_TITLE = "SysInput Settings";
@@ -17,6 +18,11 @@ const ID_PHRASE = 2012;
 const ID_SENTENCE = 2013;
 const ID_LEARNING = 2014;
 const ID_SAFE_ARROWS = 2020;
+const ID_ABBREVIATIONS = 2021;
+const ID_MANAGE_ABBREVIATIONS = 2022;
+const ID_AUTO_ABBREVIATIONS = 2023;
+const ID_ABBREVIATION_PREFIX = 2024;
+const ID_SET_PREFIX = 2025;
 const ID_APP_LIST = 2030;
 const ID_ADD_CURRENT = 2031;
 const ID_BROWSE = 2032;
@@ -40,6 +46,8 @@ const bindings = [_]Binding{
     .{ .id = ID_SENTENCE, .feature = .sentence_prediction },
     .{ .id = ID_LEARNING, .feature = .personal_learning },
     .{ .id = ID_SAFE_ARROWS, .feature = .safe_arrow_mode },
+    .{ .id = ID_ABBREVIATIONS, .feature = .abbreviation_expansion },
+    .{ .id = ID_AUTO_ABBREVIATIONS, .feature = .abbreviation_auto_expand },
 };
 
 var allocator: std.mem.Allocator = undefined;
@@ -51,6 +59,7 @@ var window: ?api.HWND = null;
 var window_class: api.ATOM = 0;
 var list_box: ?api.HWND = null;
 var status_label: ?api.HWND = null;
+var abbreviation_prefix: ?api.HWND = null;
 var controls: [bindings.len]?api.HWND = [_]?api.HWND{null} ** bindings.len;
 var settings_font: ?api.HFONT = null;
 
@@ -164,8 +173,11 @@ fn createControls(parent: api.HWND) !void {
     controls[7] = try createControl("BUTTON", "Safe arrow mode (recommended)", api.BS_AUTOCHECKBOX | api.WS_TABSTOP, 32, 162, 300, 24, parent, ID_SAFE_ARROWS);
 
     _ = try createControl("BUTTON", "Abbreviations", api.BS_GROUPBOX, 16, 232, 350, 66, parent, 0);
-    const abbreviation_note = try createControl("STATIC", "Available in Phase 12", 0, 32, 258, 300, 20, parent, 0);
-    _ = api.EnableWindow(abbreviation_note, 0);
+    controls[8] = try createControl("BUTTON", "Enable abbreviation expansion", api.BS_AUTOCHECKBOX | api.WS_TABSTOP, 32, 254, 220, 24, parent, ID_ABBREVIATIONS);
+    _ = try createControl("BUTTON", "Manage...", api.BS_PUSHBUTTON | api.WS_TABSTOP, 258, 252, 88, 26, parent, ID_MANAGE_ABBREVIATIONS);
+    controls[9] = try createControl("BUTTON", "Auto with prefix", api.BS_AUTOCHECKBOX | api.WS_TABSTOP, 32, 278, 126, 18, parent, ID_AUTO_ABBREVIATIONS);
+    abbreviation_prefix = try createControl("EDIT", ";", api.ES_AUTOHSCROLL | api.WS_TABSTOP, 164, 276, 30, 22, parent, ID_ABBREVIATION_PREFIX);
+    _ = try createControl("BUTTON", "Set", api.BS_PUSHBUTTON | api.WS_TABSTOP, 200, 276, 46, 22, parent, ID_SET_PREFIX);
     _ = try createControl("BUTTON", "Corpus", api.BS_GROUPBOX, 382, 232, 346, 66, parent, 0);
     const corpus_note = try createControl("STATIC", "Available in Phase 13", 0, 398, 258, 290, 20, parent, 0);
     _ = api.EnableWindow(corpus_note, 0);
@@ -223,6 +235,28 @@ fn refreshSettings() void {
         const control = controls[index] orelse continue;
         _ = api.SendMessageA(control, api.BM_SETCHECK, if (settings.isEnabled(binding.feature)) api.BST_CHECKED else api.BST_UNCHECKED, 0);
     }
+    if (abbreviation_prefix) |control| {
+        var text: [2:0]u8 = .{ settings.snapshot().abbreviation_prefix, 0 };
+        _ = api.SetWindowTextA(control, &text);
+    }
+}
+
+fn setAbbreviationPrefix() void {
+    const control = abbreviation_prefix orelse return;
+    var text: [3:0]u8 = [_:0]u8{0} ** 3;
+    const len = api.GetWindowTextA(control, &text, text.len);
+    if (len != 1) {
+        setStatus("Prefix must be one punctuation character.");
+        refreshSettings();
+        return;
+    }
+    settings.setAbbreviationPrefixAndSave(text[0]) catch {
+        setStatus("Prefix must be one punctuation character.");
+        refreshSettings();
+        return;
+    };
+    callbacks.settings_changed();
+    setStatus("Abbreviation prefix saved.");
 }
 
 fn handleCheckbox(id: usize) void {
@@ -319,7 +353,9 @@ fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: a
             const notification: usize = (w_param >> 16) & 0xffff;
             if (notification == api.BN_CLICKED) {
                 switch (id) {
-                    ID_ENABLED, ID_STARTUP, ID_WORD, ID_NEXT, ID_PHRASE, ID_SENTENCE, ID_LEARNING, ID_SAFE_ARROWS => handleCheckbox(id),
+                    ID_ENABLED, ID_STARTUP, ID_WORD, ID_NEXT, ID_PHRASE, ID_SENTENCE, ID_LEARNING, ID_SAFE_ARROWS, ID_ABBREVIATIONS, ID_AUTO_ABBREVIATIONS => handleCheckbox(id),
+                    ID_MANAGE_ABBREVIATIONS => abbreviation_window.show(),
+                    ID_SET_PREFIX => setAbbreviationPrefix(),
                     ID_ADD_CURRENT => addCurrentApplication(),
                     ID_BROWSE => browseApplication(),
                     ID_TOGGLE_APP => toggleSelectedApplication(),
@@ -337,6 +373,7 @@ fn windowProc(hwnd: api.HWND, message: api.UINT, w_param: api.WPARAM, l_param: a
             window = null;
             list_box = null;
             status_label = null;
+            abbreviation_prefix = null;
             controls = [_]?api.HWND{null} ** bindings.len;
             return 0;
         },

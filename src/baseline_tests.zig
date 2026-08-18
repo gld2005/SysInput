@@ -23,6 +23,7 @@ const runtime_settings = sysinput.core.runtime_settings;
 const data_paths = sysinput.core.data_paths;
 const application_exclusions = sysinput.core.application_exclusions;
 const app_guard = sysinput.win32.app_guard;
+const abbreviation = sysinput.text.abbreviation;
 
 var worker_test_mutex = std.Thread.Mutex{};
 var worker_test_learned = false;
@@ -368,6 +369,15 @@ fn testRuntimeSettings(allocator: std.mem.Allocator) !void {
     const defaults = runtime_settings.defaultSnapshot();
     try expect(defaults.enabled and defaults.word_completion and defaults.safe_arrow_mode);
     try expect(!defaults.abbreviation_expansion and !defaults.corpus_prediction);
+    try expect(!defaults.abbreviation_auto_expand and defaults.abbreviation_prefix == ';');
+
+    var legacy: [18]u8 = undefined;
+    @memcpy(legacy[0..8], "SYSISET1");
+    std.mem.writeInt(u16, legacy[8..10], 1, .little);
+    std.mem.writeInt(u16, legacy[10..12], 2, .little);
+    std.mem.writeInt(u16, legacy[16..18], runtime_settings.mask(.enabled), .little);
+    std.mem.writeInt(u32, legacy[12..16], std.hash.Crc32.hash(legacy[16..18]), .little);
+    try expect((try runtime_settings.decode(&legacy)) == runtime_settings.mask(.enabled));
 
     const encoded = runtime_settings.encode(runtime_settings.mask(.enabled) | runtime_settings.mask(.phrase_completion));
     const decoded = try runtime_settings.decode(&encoded);
@@ -384,6 +394,8 @@ fn testRuntimeSettings(allocator: std.mem.Allocator) !void {
     defer store.deinit();
     try expect(initialized.status == .missing);
     try store.setAndSave(.word_completion, false);
+    try store.setAndSave(.abbreviation_auto_expand, true);
+    try store.setAbbreviationPrefixAndSave('#');
     try expect(!store.isEnabled(.word_completion));
 
     const reloaded_result = try runtime_settings.Store.initAt(allocator, root);
@@ -391,6 +403,7 @@ fn testRuntimeSettings(allocator: std.mem.Allocator) !void {
     defer reloaded.deinit();
     try expect(reloaded_result.status == .loaded);
     try expect(!reloaded.isEnabled(.word_completion));
+    try expect(reloaded.snapshot().abbreviation_auto_expand and reloaded.snapshot().abbreviation_prefix == '#');
     try reloaded.setAndSave(.word_completion, true);
     try expect(reloaded.isEnabled(.word_completion));
 
@@ -937,6 +950,60 @@ fn testSentenceRecordBound(allocator: std.mem.Allocator) !void {
     try expect(model.recordCount() == sentence_prediction.MAX_SENTENCE_RECORDS);
 }
 
+fn testAbbreviationLookupAndCase(allocator: std.mem.Allocator) !void {
+    const root = try phase10TempRoot(allocator, "abbreviation-lookup");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    const initialized = try abbreviation.Store.initAt(allocator, root);
+    var store = initialized.store;
+    defer store.deinit();
+    try expect(!try store.upsert("sig", "Best regards, Alex", true, false));
+    const folded = store.lookup("SIG") orelse return error.BaselineTestFailed;
+    try expectEqualStrings("Best regards, Alex", folded.expansionSlice());
+    try expect(try store.upsert("sig", "Sincerely", true, true));
+    try expect(store.lookup("SIG") == null);
+    try expectEqualStrings("Sincerely", (store.lookup("sig") orelse return error.BaselineTestFailed).expansionSlice());
+}
+
+fn testAbbreviationPersistenceAndCorruption(allocator: std.mem.Allocator) !void {
+    const root = try phase10TempRoot(allocator, "abbreviation-persist");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    var first = (try abbreviation.Store.initAt(allocator, root)).store;
+    _ = try first.upsert("addr", "221B Baker Street, London", true, false);
+    first.recordAccepted("addr");
+    try first.saveIfDirty(true);
+    first.deinit();
+    const restored_result = try abbreviation.Store.initAt(allocator, root);
+    var restored = restored_result.store;
+    defer restored.deinit();
+    try expect(restored_result.status == .loaded);
+    try expectEqualStrings("221B Baker Street, London", (restored.lookup("addr") orelse return error.BaselineTestFailed).expansionSlice());
+    var file = try std.fs.cwd().createFile(restored.path, .{ .truncate = true });
+    try file.writeAll("damaged");
+    file.close();
+    const corrupt_result = try abbreviation.Store.initAt(allocator, root);
+    var corrupt = corrupt_result.store;
+    defer corrupt.deinit();
+    try expect(corrupt_result.status == .corrupt and corrupt.lookup("addr") == null);
+}
+
+fn testExplicitAbbreviationTrigger(_: std.mem.Allocator) !void {
+    try expectEqualStrings("addr", abbreviation.explicitTrigger("send to ;addr ", ';') orelse return error.BaselineTestFailed);
+    try expect(abbreviation.explicitTrigger("send to addr ", ';') == null);
+    try expect(abbreviation.explicitTrigger("send to ;addr", ';') == null);
+}
+
+fn testAbbreviationCandidateAcceptance(_: std.mem.Allocator) !void {
+    var candidate = try candidate_model.Candidate.init(.abbreviation_expansion, .user_abbreviation, "Best regards, Alex", "Best regards, Alex", 3, 1, 1000);
+    candidate.chunk_count = candidate_model.buildCompletionChunks(candidate.insert_text, &candidate.chunks);
+    const full = candidate.acceptance(.chunk) orelse return error.BaselineTestFailed;
+    try expectEqualStrings("Best regards, Alex", full.text);
+    const word = candidate.acceptance(.word) orelse return error.BaselineTestFailed;
+    try expectEqualStrings("Best", word.text);
+    try expectEqualStrings("regards, Alex", candidate.remainingAfter(word));
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -971,6 +1038,10 @@ pub fn main() !void {
         .{ .name = "personal learning can be disabled", .run = testLearningCanBeDisabled },
         .{ .name = "application exclusion persistence", .run = testApplicationExclusions },
         .{ .name = "application guard safety", .run = testApplicationGuard },
+        .{ .name = "abbreviation exact lookup and case", .run = testAbbreviationLookupAndCase },
+        .{ .name = "abbreviation persistence and corruption", .run = testAbbreviationPersistenceAndCorruption },
+        .{ .name = "explicit abbreviation trigger", .run = testExplicitAbbreviationTrigger },
+        .{ .name = "abbreviation candidate acceptance", .run = testAbbreviationCandidateAcceptance },
     };
 
     try testWordCharacters();
@@ -992,5 +1063,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 35/35 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 39/39 checks passed\n");
 }

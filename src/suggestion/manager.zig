@@ -22,6 +22,7 @@ const text_inject = sysinput.win32.text_inject;
 const suggestion_window = sysinput.ui.window;
 const runtime_settings = sysinput.core.runtime_settings;
 const app_guard = sysinput.win32.app_guard;
+const abbreviation = sysinput.text.abbreviation;
 
 const CandidateTextStorage = struct {
     display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
@@ -68,6 +69,8 @@ var saved_context_revision: u64 = 0;
 var saved_sentence_revision: u64 = 0;
 var last_profile_save_ms: i64 = 0;
 var settings_store: *runtime_settings.Store = undefined;
+var abbreviation_store: abbreviation.Store = undefined;
+var abbreviation_initialized = false;
 
 /// Global UI for autocompletion suggestions
 pub var autocomplete_ui_manager: suggestion_ui.AutocompleteUI = undefined;
@@ -129,10 +132,14 @@ pub fn init(
     allocator: std.mem.Allocator,
     module_instance: anytype,
     profiles_directory: []const u8,
+    data_directory: []const u8,
     runtime_store: *runtime_settings.Store,
 ) !void {
     gpa_allocator = allocator;
     settings_store = runtime_store;
+    const abbreviation_result = try abbreviation.Store.initAt(allocator, data_directory);
+    abbreviation_store = abbreviation_result.store;
+    abbreviation_initialized = true;
 
     // Initialize spellchecker
     spell_checker = try spellcheck.SpellChecker.init(allocator);
@@ -193,8 +200,34 @@ pub fn computePrediction(
     try autocomplete_engine.processTextSnapshotWithLearning(target_id, request.textSlice(), settings.personal_learning);
     try context_model.processTextSnapshotWithLearning(target_id, request.textSlice(), settings.personal_learning);
     try sentence_model.processTextSnapshotWithLearning(target_id, request.textSlice(), settings.personal_learning);
+
+    if (settings.abbreviation_expansion and settings.abbreviation_auto_expand) {
+        if (abbreviation.explicitTrigger(request.textSlice(), settings.abbreviation_prefix)) |trigger| {
+            if (abbreviation_store.lookup(trigger)) |matched| {
+                _ = result.setAutomaticAbbreviation(trigger, matched.expansionSlice(), trigger.len + 2);
+                return;
+            }
+        }
+    }
     autocomplete_engine.setCurrentWord(request.wordSlice());
     defer autocomplete_engine.setCurrentWord("");
+
+    if (settings.abbreviation_expansion and request.word_len > 0) {
+        if (abbreviation_store.lookup(request.wordSlice())) |matched| {
+            const expansion = matched.expansionSlice();
+            var structured = try candidate_model.Candidate.init(
+                .abbreviation_expansion,
+                .user_abbreviation,
+                expansion,
+                expansion,
+                request.word_len,
+                100_000,
+                1000,
+            );
+            structured.chunk_count = candidate_model.buildCompletionChunks(expansion, &structured.chunks);
+            if (structured.isValid()) _ = result.addCandidate(&structured);
+        }
+    }
 
     var generated = std.ArrayList([]const u8).init(gpa_allocator);
     defer {
@@ -277,6 +310,10 @@ pub fn recordPredictionFeedback(
     candidate_kind: candidate_model.CandidateKind,
     text: []const u8,
 ) !void {
+    if (candidate_kind == .abbreviation_expansion) {
+        if (feedback_kind == .accepted) abbreviation_store.recordAccepted(text);
+        return;
+    }
     if (!settings_store.isEnabled(.personal_learning)) return;
     switch (candidate_kind) {
         .word_completion => switch (feedback_kind) {
@@ -291,12 +328,14 @@ pub fn recordPredictionFeedback(
             if (feedback_kind == .shown) .shown else .accepted,
             text,
         ),
+        .abbreviation_expansion => unreachable,
     }
 }
 
 /// Runs only on the prediction worker. Regular calls are cheap revision/time
 /// checks; shutdown forces the final atomic save.
 pub fn maintainPersonalProfile(force: bool) !void {
+    if (abbreviation_initialized) try abbreviation_store.saveIfDirty(force);
     const personal_dirty = profile_initialized and autocomplete_engine.revision != saved_profile_revision;
     const context_dirty = context_profile_initialized and context_model.revision != saved_context_revision;
     const sentence_dirty = sentence_profile_initialized and sentence_model.revision != saved_sentence_revision;
@@ -332,6 +371,24 @@ pub fn applyPrediction(result: *const prediction_worker.PredictionResult) void {
     // worker is finishing an older request.
     if (result.target_window != api.GetForegroundWindow()) {
         clearSuggestions();
+        hideSuggestions();
+        return;
+    }
+
+    if (result.automatic_abbreviation) {
+        const target = api.getFocusedWindow() orelse {
+            hideSuggestions();
+            return;
+        };
+        var payload: [config.TEXT.MAX_SUGGESTION_LEN + 1]u8 = undefined;
+        const expansion = result.automatic_expansion[0..result.automatic_expansion_len];
+        if (expansion.len + 1 > payload.len) return;
+        @memcpy(payload[0..expansion.len], expansion);
+        payload[expansion.len] = ' ';
+        if (text_inject.replacePreviousAscii(target, result.automatic_replace_length, payload[0 .. expansion.len + 1])) {
+            abbreviation_store.recordAccepted(result.automatic_trigger[0..result.automatic_trigger_len]);
+            buffer_controller.recordInjectedReplacement(result.automatic_replace_length, payload[0 .. expansion.len + 1]) catch buffer_controller.invalidatePhysicalInputState();
+        }
         hideSuggestions();
         return;
     }
@@ -670,6 +727,9 @@ pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) bool {
     }
 
     const candidate = getSelectedCandidate() orelse return false;
+    if (candidate.kind == .abbreviation_expansion) {
+        return if (candidate.replace_length > 0) acceptAbbreviationCandidate(candidate, mode) else acceptProgressiveCandidate(candidate, mode);
+    }
     if (candidate.kind != .word_completion) {
         return acceptProgressiveCandidate(candidate, mode);
     }
@@ -805,6 +865,57 @@ pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) bool {
     // Hide suggestions UI regardless of success
     hideSuggestions();
     return success;
+}
+
+fn acceptAbbreviationCandidate(candidate: *const candidate_model.Candidate, mode: candidate_model.AcceptanceMode) bool {
+    const current_word = buffer_controller.getCurrentWord() catch return false;
+    if (current_word.len == 0 or current_word.len != candidate.replace_length) {
+        hideSuggestions();
+        return false;
+    }
+    const acceptance = candidate.acceptance(mode) orelse return false;
+    const remaining_source = candidate.remainingAfter(acceptance);
+    var remaining_storage: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+    if (remaining_source.len > remaining_storage.len) return false;
+    @memcpy(remaining_storage[0..remaining_source.len], remaining_source);
+    const remaining = remaining_storage[0..remaining_source.len];
+
+    const target = api.getFocusedWindow() orelse return false;
+    const preferred = window_detection.getPreferredMethodForWindow(target);
+    var success = insertion.tryInsertionMethod(target, current_word, acceptance.text, preferred, gpa_allocator);
+    if (!success) {
+        const fallbacks = [_]u8{ @intFromEnum(insertion.InsertMethod.Clipboard), @intFromEnum(insertion.InsertMethod.KeySimulation), @intFromEnum(insertion.InsertMethod.DirectMessage) };
+        for (fallbacks) |method| {
+            if (method == preferred) continue;
+            success = insertion.tryInsertionMethod(target, current_word, acceptance.text, method, gpa_allocator);
+            if (success) break;
+        }
+    }
+    if (!success) {
+        hideSuggestions();
+        return false;
+    }
+
+    // Expansion output updates only the shadow buffer and is never submitted as
+    // a personal-learning snapshot.
+    var shadow_text: [config.TEXT.MAX_SUGGESTION_LEN + 1]u8 = undefined;
+    if (acceptance.text.len + 1 > shadow_text.len) return false;
+    @memcpy(shadow_text[0..acceptance.text.len], acceptance.text);
+    shadow_text[acceptance.text.len] = ' ';
+    buffer_controller.recordInjectedReplacement(current_word.len, shadow_text[0 .. acceptance.text.len + 1]) catch {
+        buffer_controller.invalidatePhysicalInputState();
+    };
+    prediction_worker.submitAcceptedCandidate(.abbreviation_expansion, current_word);
+    sysinput.suggestion.stats.recordInsertionSuccess(&stats_instance);
+    sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
+    if (remaining.len == 0) {
+        hideSuggestions();
+    } else {
+        if (retainProgressiveRemainder(.abbreviation_expansion, .user_abbreviation, candidate.score, candidate.confidence, remaining)) {
+            bindCandidateLease(prediction_worker.latestVersion(), api.GetForegroundWindow());
+        }
+    }
+    return true;
 }
 
 fn acceptProgressiveCandidate(
@@ -1014,6 +1125,11 @@ pub fn deinit() void {
     autocomplete_engine.deinit();
     context_model.deinit();
     sentence_model.deinit();
+    if (abbreviation_initialized) {
+        abbreviation_store.saveIfDirty(true) catch {};
+        abbreviation_store.deinit();
+        abbreviation_initialized = false;
+    }
     if (profile_initialized) {
         profile_store.deinit();
         profile_initialized = false;
@@ -1027,4 +1143,8 @@ pub fn deinit() void {
         sentence_profile_initialized = false;
     }
     autocomplete_ui_manager.deinit();
+}
+
+pub fn abbreviations() *abbreviation.Store {
+    return &abbreviation_store;
 }

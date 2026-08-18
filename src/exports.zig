@@ -29,6 +29,7 @@ pub const text = struct {
     pub const dictionary = @import("text/dictionary.zig");
     pub const personal_profile = @import("text/personal_profile.zig");
     pub const sentence_prediction = @import("text/sentence_prediction.zig");
+    pub const abbreviation = @import("text/abbreviation.zig");
     pub const edit_distance = @import("text/edit_distance.zig");
     pub const spellcheck = @import("text/spellcheck.zig");
 };
@@ -38,6 +39,7 @@ pub const ui = struct {
     pub const suggestion_ui = @import("ui/suggestion_ui.zig");
     pub const window = @import("ui/window.zig");
     pub const settings_window = @import("ui/settings_window.zig");
+    pub const abbreviation_window = @import("ui/abbreviation_window.zig");
 };
 
 pub const win32 = platform.windows;

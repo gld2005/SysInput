@@ -18,6 +18,7 @@ pub const CandidateKind = enum(u8) {
     next_word,
     phrase_completion,
     sentence_completion,
+    abbreviation_expansion,
 };
 
 pub const CandidateSource = enum(u8) {
@@ -26,6 +27,7 @@ pub const CandidateSource = enum(u8) {
     spelling,
     learned_phrase,
     repeated_sentence,
+    user_abbreviation,
 };
 
 pub const ChunkKind = enum(u8) {
@@ -154,7 +156,7 @@ pub const Candidate = struct {
     /// completion remains an all-or-nothing replacement; append candidates
     /// can be consumed one chunk or one whitespace-delimited word at a time.
     pub fn acceptance(self: *const Candidate, mode: AcceptanceMode) ?Acceptance {
-        if (self.kind == .word_completion) {
+        if (self.kind == .word_completion or (self.kind == .abbreviation_expansion and mode == .chunk)) {
             if (self.insert_text.len == 0) return null;
             return .{ .text = self.insert_text, .consumed_len = self.insert_text.len };
         }

@@ -162,6 +162,14 @@ pub const WS_EX_TRANSPARENT = 0x00000020;
 pub const GWL_EXSTYLE = -20;
 pub const GWL_STYLE = -16;
 pub const ES_PASSWORD: usize = 0x0020;
+pub const ES_MULTILINE: usize = 0x0004;
+pub const ES_AUTOVSCROLL: usize = 0x0040;
+pub const ES_AUTOHSCROLL: usize = 0x0080;
+pub const EN_CHANGE = 0x0300;
+pub const MB_OK = 0x00000000;
+pub const MB_YESNO = 0x00000004;
+pub const MB_ICONWARNING = 0x00000030;
+pub const IDYES = 6;
 pub const CS_DROPSHADOW = 0x00020000;
 
 // Window display commands
@@ -553,6 +561,8 @@ pub extern "user32" fn GetForegroundWindow() callconv(.C) ?HWND;
 pub extern "user32" fn GetClassNameA(hWnd: ?HWND, lpClassName: [*:0]u8, nMaxCount: c_int) callconv(.C) c_int;
 pub extern "user32" fn GetFocus() callconv(.C) ?HWND;
 pub extern "user32" fn GetWindowLongPtrA(hWnd: HWND, nIndex: c_int) callconv(.C) isize;
+pub extern "user32" fn GetWindowTextA(hWnd: HWND, lpString: [*:0]u8, nMaxCount: c_int) callconv(.C) c_int;
+pub extern "user32" fn MessageBoxA(hWnd: ?HWND, lpText: [*:0]const u8, lpCaption: [*:0]const u8, uType: UINT) callconv(.C) c_int;
 
 pub extern "user32" fn SendMessageA(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.C) LRESULT;
 pub extern "user32" fn PostMessageA(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.C) BOOL;
@@ -621,6 +631,7 @@ pub extern "user32" fn LoadIconA(hInstance: ?HINSTANCE, lpIconName: [*:0]const u
 
 pub extern "shell32" fn Shell_NotifyIconA(dwMessage: DWORD, lpData: *NOTIFYICONDATAA) callconv(.C) BOOL;
 pub extern "comdlg32" fn GetOpenFileNameA(param: *OPENFILENAMEA) callconv(.C) BOOL;
+pub extern "comdlg32" fn GetSaveFileNameA(param: *OPENFILENAMEA) callconv(.C) BOOL;
 pub extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: DWORD) callconv(.C) HRESULT;
 pub extern "ole32" fn CoCreateInstance(rclsid: *const GUID, pUnkOuter: ?*anyopaque, dwClsContext: DWORD, riid: *const GUID, ppv: **anyopaque) callconv(.C) HRESULT;
 pub extern "oleaut32" fn VariantClear(pvarg: *anyopaque) callconv(.C) HRESULT;

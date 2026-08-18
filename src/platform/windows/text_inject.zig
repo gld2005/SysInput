@@ -38,6 +38,39 @@ pub fn insertTextAsSelection(hwnd: api.HWND, text: []const u8) bool {
     return false;
 }
 
+/// Replaces a fixed number of ASCII characters immediately before the caret.
+/// Standard controls use their native selection (and therefore native Undo).
+/// Other controls receive an injected Shift+Left selection before insertion.
+pub fn replacePreviousAscii(hwnd: api.HWND, count: usize, text: []const u8) bool {
+    if (count == 0 or count > 512 or text.len == 0) return false;
+    const selection_value = api.SendMessageA(hwnd, api.EM_GETSEL, 0, 0);
+    const bits: u64 = @bitCast(selection_value);
+    const start: u32 = @truncate(bits & 0xffff);
+    const end: u32 = @truncate((bits >> 16) & 0xffff);
+    if (start == end and end >= count) {
+        _ = api.SendMessageA(hwnd, api.EM_SETSEL, end - @as(u32, @intCast(count)), end);
+        if (insertTextAsSelection(hwnd, text)) return true;
+        _ = api.SendMessageA(hwnd, api.EM_SETSEL, end, end);
+    }
+
+    var inputs: [514]api.INPUT = undefined;
+    var used: usize = 0;
+    inputs[used] = keyboardInput(api.VK_SHIFT, 0);
+    used += 1;
+    for (0..count) |_| {
+        inputs[used] = keyboardInput(api.VK_LEFT, 0);
+        used += 1;
+    }
+    inputs[used] = keyboardInput(api.VK_SHIFT, api.KEYEVENTF_KEYUP);
+    used += 1;
+    if (api.SendInput(@intCast(used), &inputs[0], @sizeOf(api.INPUT)) != used) return false;
+    return insertTextAsSelection(hwnd, text);
+}
+
+fn keyboardInput(key: u16, flags: api.DWORD) api.INPUT {
+    return .{ .type = api.INPUT_KEYBOARD, .ki = .{ .wVk = key, .wScan = 0, .dwFlags = flags, .time = 0, .dwExtraInfo = 0, .padding1 = 0, .padding2 = 0 } };
+}
+
 /// Try direct Windows message-based insertion
 fn tryDirectInsertion(hwnd: api.HWND, text: []const u8) bool {
     // Create null-terminated text

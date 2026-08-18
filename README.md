@@ -109,6 +109,9 @@ Check out our contribution guidelines for more details.
 
 ## Troubleshooting
 
+Stage 12 abbreviation setup and verification are described in
+[docs/PHASE12_ABBREVIATIONS.md](docs/PHASE12_ABBREVIATIONS.md).
+
 **No suggestions?**
 
 - Ensure SysInput is running.
