@@ -4,314 +4,326 @@ const sysinput = @import("root").sysinput;
 const dict = sysinput.text.dictionary;
 const insertion = sysinput.win32.insertion;
 const config = sysinput.core.config;
-const debug = sysinput.core.debug;
 
-/// Maximum number of suggestions to generate
 const MAX_SUGGESTIONS = config.TEXT.MAX_SUGGESTIONS;
 
-/// Recent suggestion cache to avoid recalculating
-const SuggestionCache = struct {
-    /// The input word that generated these suggestions
-    input: [config.TEXT.MAX_SUGGESTION_LEN]u8,
-    /// Input length (since input might contain garbage past this)
-    input_len: usize,
-    /// Owned fixed storage avoids retaining slices owned by a result list.
-    suggestion_storage: [MAX_SUGGESTIONS][config.TEXT.MAX_SUGGESTION_LEN]u8,
-    suggestion_lengths: [MAX_SUGGESTIONS]u16,
-    /// Number of valid suggestions in the cache
-    count: usize,
-    /// Whether the cache is valid
-    valid: bool,
-
-    pub fn init() SuggestionCache {
-        return .{
-            .input = [_]u8{0} ** config.TEXT.MAX_SUGGESTION_LEN,
-            .input_len = 0,
-            .suggestion_storage = [_][config.TEXT.MAX_SUGGESTION_LEN]u8{
-                [_]u8{0} ** config.TEXT.MAX_SUGGESTION_LEN,
-            } ** MAX_SUGGESTIONS,
-            .suggestion_lengths = [_]u16{0} ** MAX_SUGGESTIONS,
-            .count = 0,
-            .valid = false,
-        };
-    }
-
-    pub fn isMatch(self: *const SuggestionCache, input: []const u8) bool {
-        // If caching is disabled in config, always return false
-        if (!config.PERFORMANCE.USE_SUGGESTION_CACHE) return false;
-
-        if (!self.valid or input.len != self.input_len) return false;
-        return std.mem.eql(u8, input, self.input[0..self.input_len]);
-    }
-
-    pub fn update(self: *SuggestionCache, input: []const u8, new_suggestions: [][]const u8) void {
-        if (input.len >= self.input.len) return; // Too long for our cache
-
-        @memcpy(self.input[0..input.len], input);
-        self.input_len = input.len;
-
-        self.count = 0;
-        for (new_suggestions[0..@min(new_suggestions.len, MAX_SUGGESTIONS)]) |suggestion| {
-            const destination = self.count;
-            if (suggestion.len > self.suggestion_storage[destination].len) continue;
-            @memcpy(self.suggestion_storage[destination][0..suggestion.len], suggestion);
-            self.suggestion_lengths[destination] = @intCast(suggestion.len);
-            self.count += 1;
-        }
-
-        self.valid = true;
-    }
-
-    pub fn invalidate(self: *SuggestionCache) void {
-        self.valid = false;
-        self.count = 0;
-    }
+pub const PersonalStats = struct {
+    typed_count: u32 = 0,
+    shown_count: u32 = 0,
+    accepted_count: u32 = 0,
+    last_used: u64 = 0,
+    last_accepted: u64 = 0,
+    consecutive_ignores: u16 = 0,
 };
 
-/// Autocompletion engine structure
-pub const AutocompleteEngine = struct {
-    /// Dictionary for base vocabulary
-    dictionary: *dict.Dictionary,
-    /// User's previously typed words with frequency count
-    user_words: std.StringHashMap(u32),
-    /// Allocator for dynamic memory
-    allocator: std.mem.Allocator,
-    /// Current partial word being typed
-    current_word: []const u8,
-    /// Suggestion cache for performance
-    cache: SuggestionCache,
+pub const PersonalRecord = struct {
+    word: []const u8,
+    stats: PersonalStats,
+};
 
-    /// Initialize a new autocompletion engine
+pub const SuggestionInfo = struct {
+    personal: bool,
+    score: i32,
+};
+
+const ScoredWord = struct {
+    word: []const u8,
+    score: i32,
+    personal: bool,
+};
+
+pub const AutocompleteEngine = struct {
+    dictionary: *dict.Dictionary,
+    personal_words: std.StringHashMap(PersonalStats),
+    personal_order: std.ArrayList([]const u8),
+    allocator: std.mem.Allocator,
+    current_word: []const u8,
+    usage_clock: u64,
+    revision: u64,
+    snapshot_target: usize,
+    snapshot: [config.TEXT.MAX_BUFFER_SIZE]u8,
+    snapshot_len: usize,
+
     pub fn init(allocator: std.mem.Allocator, dictionary: *dict.Dictionary) !AutocompleteEngine {
-        return AutocompleteEngine{
+        return .{
             .dictionary = dictionary,
-            .user_words = std.StringHashMap(u32).init(allocator),
+            .personal_words = std.StringHashMap(PersonalStats).init(allocator),
+            .personal_order = std.ArrayList([]const u8).init(allocator),
             .allocator = allocator,
             .current_word = "",
-            .cache = SuggestionCache.init(),
+            .usage_clock = 0,
+            .revision = 0,
+            .snapshot_target = 0,
+            .snapshot = undefined,
+            .snapshot_len = 0,
         };
     }
 
-    /// Clean up resources
     pub fn deinit(self: *AutocompleteEngine) void {
-        var it = self.user_words.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-        }
-        self.user_words.deinit();
+        for (self.personal_order.items) |word| self.allocator.free(word);
+        self.personal_order.deinit();
+        self.personal_words.deinit();
     }
 
-    /// Add a word to the user's vocabulary
-    pub fn addWord(self: *AutocompleteEngine, word: []const u8) !void {
-        // Don't add words that are too short (using config value)
-        if (word.len < config.BEHAVIOR.MIN_TRIGGER_LEN) return;
-
-        // Convert to lowercase
-        var buf: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
-        if (word.len > buf.len) return;
-
-        var i: usize = 0;
-        while (i < word.len) : (i += 1) {
-            buf[i] = std.ascii.toLower(word[i]);
-        }
-        const lower_word = buf[0..word.len];
-
-        // Check if the word is already in the user's words
-        if (self.user_words.get(lower_word)) |count| {
-            try self.user_words.put(lower_word, count + 1);
-        } else {
-            // Create a copy of the word that we'll own
-            const owned_word = try self.allocator.dupe(u8, lower_word);
-            errdefer self.allocator.free(owned_word);
-
-            // Add it to the user's words with a count of 1
-            try self.user_words.put(owned_word, 1);
-        }
-
-        // Invalidate suggestion cache whenever vocabulary changes
-        self.cache.invalidate();
-    }
-
-    /// Set the current partial word being typed
     pub fn setCurrentWord(self: *AutocompleteEngine, word: []const u8) void {
-        // Only update if the word has changed
-        if (!std.mem.eql(u8, self.current_word, word)) {
-            self.current_word = word;
-        }
+        self.current_word = word;
     }
 
-    /// Check if a string starts with a prefix (case-insensitive)
-    fn startsWithInsensitive(haystack: []const u8, needle: []const u8) bool {
-        if (needle.len > haystack.len) return false;
+    /// Compatibility entry point used by baseline tests: a directly observed
+    /// completed word counts as typed once.
+    pub fn addWord(self: *AutocompleteEngine, word: []const u8) !void {
+        try self.recordTyped(word);
+    }
 
-        for (needle, 0..) |n_char, i| {
-            const h_char = haystack[i];
-            if (std.ascii.toLower(h_char) != std.ascii.toLower(n_char)) {
-                return false;
+    pub fn completeWord(self: *AutocompleteEngine, word: []const u8) !void {
+        try self.recordAccepted(word);
+        self.current_word = "";
+    }
+
+    pub fn recordTyped(self: *AutocompleteEngine, word: []const u8) !void {
+        var normalized: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+        const lower = normalizeWord(word, &normalized) orelse return;
+        var stats = try self.ensurePersonal(lower);
+        self.tick();
+        stats.typed_count +|= 1;
+        stats.last_used = self.usage_clock;
+        try self.personal_words.put(lower, stats);
+        self.revision +%= 1;
+    }
+
+    pub fn recordShown(self: *AutocompleteEngine, word: []const u8) !void {
+        var normalized: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+        const lower = normalizeWord(word, &normalized) orelse return;
+        const existing = self.personal_words.get(lower) orelse return;
+        var updated = existing;
+        updated.shown_count +|= 1;
+        updated.consecutive_ignores +|= 1;
+        try self.personal_words.put(lower, updated);
+        self.revision +%= 1;
+    }
+
+    pub fn recordAccepted(self: *AutocompleteEngine, word: []const u8) !void {
+        var normalized: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+        const lower = normalizeWord(word, &normalized) orelse return;
+        var stats = try self.ensurePersonal(lower);
+        self.tick();
+        stats.accepted_count +|= 1;
+        stats.last_used = self.usage_clock;
+        stats.last_accepted = self.usage_clock;
+        stats.consecutive_ignores = 0;
+        try self.personal_words.put(lower, stats);
+        self.revision +%= 1;
+    }
+
+    /// Learns only words completed in an appended portion of the same target
+    /// snapshot. Re-running prediction for an unchanged buffer learns nothing.
+    /// The snapshot is process-local and is never serialized.
+    pub fn processTextSnapshot(self: *AutocompleteEngine, target: usize, text: []const u8) !void {
+        const bounded = text[0..@min(text.len, self.snapshot.len)];
+        const is_append = target != 0 and target == self.snapshot_target and
+            bounded.len >= self.snapshot_len and
+            std.mem.eql(u8, bounded[0..self.snapshot_len], self.snapshot[0..self.snapshot_len]);
+
+        if (is_append) {
+            var start = self.snapshot_len;
+            while (start > 0 and insertion.isWordChar(bounded[start - 1])) start -= 1;
+            var word_start: ?usize = null;
+            for (bounded[start..], start..) |character, index| {
+                if (insertion.isWordChar(character)) {
+                    if (word_start == null) word_start = index;
+                } else if (word_start) |word_index| {
+                    if (index >= self.snapshot_len) try self.recordTyped(bounded[word_index..index]);
+                    word_start = null;
+                }
             }
         }
-
-        return true;
+        @memcpy(self.snapshot[0..bounded.len], bounded);
+        self.snapshot_len = bounded.len;
+        self.snapshot_target = target;
     }
 
-    /// Get suggestions based on the current partial word
     pub fn getSuggestions(self: *AutocompleteEngine, results: *std.ArrayList([]const u8)) !void {
-        // Clear existing suggestions
-        for (results.items) |item| {
-            self.allocator.free(item);
-        }
+        for (results.items) |item| self.allocator.free(item);
         results.clearRetainingCapacity();
-
-        // Don't provide suggestions for very short partial words (using config)
         if (self.current_word.len < config.BEHAVIOR.MIN_TRIGGER_LEN) return;
 
-        // Check cache first
-        if (self.cache.isMatch(self.current_word)) {
-            debug.debugPrint("Using cached suggestions for '{s}'\n", .{self.current_word});
+        var normalized: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+        const prefix = normalizeWord(self.current_word, &normalized) orelse return;
+        var top = std.BoundedArray(ScoredWord, MAX_SUGGESTIONS).init(0) catch unreachable;
 
-            // Copy cached suggestions to results
-            for (0..self.cache.count) |i| {
-                const cached_suggestion = self.cache.suggestion_storage[i][0..self.cache.suggestion_lengths[i]];
-                const owned_suggestion = try self.allocator.dupe(u8, cached_suggestion);
-                try results.append(owned_suggestion);
+        const personal_range = personalPrefixRange(self.personal_order.items, prefix);
+        for (self.personal_order.items[personal_range.start..personal_range.end]) |word| {
+            if (std.mem.eql(u8, word, prefix)) continue;
+            const stats = self.personal_words.get(word).?;
+            insertTop(&top, .{
+                .word = word,
+                .score = personalScore(self.usage_clock, word, stats, self.dictionary.rankOf(word)) +
+                    caseMatchBonus(self.current_word),
+                .personal = true,
+            });
+        }
+
+        const dictionary_range = self.dictionary.prefixRange(prefix);
+        for (self.dictionary.ranked_words.items[dictionary_range.start..dictionary_range.end]) |entry| {
+            if (std.mem.eql(u8, entry.text, prefix) or self.personal_words.contains(entry.text)) continue;
+            insertTop(&top, .{
+                .word = entry.text,
+                .score = dictionaryScore(entry.rank, entry.text) + caseMatchBonus(self.current_word),
+                .personal = false,
+            });
+        }
+
+        for (top.slice()) |entry| {
+            const output = try self.allocator.dupe(u8, entry.word);
+            errdefer self.allocator.free(output);
+            if (self.current_word.len != 0 and std.ascii.isUpper(self.current_word[0])) {
+                output[0] = std.ascii.toUpper(output[0]);
             }
-            return;
-        }
-
-        // Convert to lowercase for matching
-        var buf: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
-        if (self.current_word.len > buf.len) return;
-
-        var i: usize = 0;
-        while (i < self.current_word.len) : (i += 1) {
-            buf[i] = std.ascii.toLower(self.current_word[i]);
-        }
-        const lower_word = buf[0..self.current_word.len];
-
-        // Pre-allocate a buffer to track highest frequency user words
-        var top_user_words = std.BoundedArray(struct { word: []const u8, freq: u32 }, MAX_SUGGESTIONS).init(0) catch unreachable;
-
-        // First scan user's words - We'll collect top N by frequency instead of just taking the first N
-        var it = self.user_words.iterator();
-        var words_checked: usize = 0;
-        const max_words_to_check = config.PERFORMANCE.MAX_USER_WORDS_TO_CHECK;
-
-        while (it.next()) |entry| {
-            const word = entry.key_ptr.*;
-            const freq = entry.value_ptr.*;
-
-            // Limit the number of words we check for performance
-            words_checked += 1;
-            if (words_checked > max_words_to_check) break;
-
-            // If the word starts with the current partial word (and isn't exactly the same)
-            if (startsWithInsensitive(word, lower_word) and
-                !std.mem.eql(u8, word, lower_word))
-            {
-                // Add to our bounded array, maintaining sorting by frequency
-                if (top_user_words.len < MAX_SUGGESTIONS) {
-                    // Just add it if we have room
-                    try top_user_words.append(.{ .word = word, .freq = freq });
-                    // Insertion sort to keep it sorted by frequency (highest first)
-                    var j = top_user_words.len - 1;
-                    while (j > 0 and top_user_words.get(j).freq > top_user_words.get(j - 1).freq) {
-                        const temp = top_user_words.get(j);
-                        top_user_words.set(j, top_user_words.get(j - 1));
-                        top_user_words.set(j - 1, temp);
-                        j -= 1;
-                    }
-                } else if (freq > top_user_words.get(top_user_words.len - 1).freq) {
-                    // Replace lowest frequency word if this one is higher
-                    top_user_words.set(top_user_words.len - 1, .{ .word = word, .freq = freq });
-                    // Bubble up to maintain sorting
-                    var j = top_user_words.len - 1;
-                    while (j > 0 and top_user_words.get(j).freq > top_user_words.get(j - 1).freq) {
-                        const temp = top_user_words.get(j);
-                        top_user_words.set(j, top_user_words.get(j - 1));
-                        top_user_words.set(j - 1, temp);
-                        j -= 1;
-                    }
-                }
-            }
-        }
-
-        // Add top user words to results
-        for (0..top_user_words.len) |idx| {
-            const word = top_user_words.get(idx).word;
-            const owned_suggestion = try self.allocator.dupe(u8, word);
-            try results.append(owned_suggestion);
-        }
-
-        // If we don't have enough user words, add suggestions from dictionary
-        if (top_user_words.len < MAX_SUGGESTIONS) {
-            // Track how many more suggestions we need
-            const needed = MAX_SUGGESTIONS - top_user_words.len;
-
-            var dict_iter = self.dictionary.word_map.keyIterator();
-            var dict_count: usize = 0;
-
-            while (dict_iter.next()) |dict_word| {
-                // If the dictionary word starts with the current partial word
-                if (startsWithInsensitive(dict_word.*, lower_word) and
-                    !std.mem.eql(u8, dict_word.*, lower_word))
-                {
-                    // Skip if this word is already in our results (from user words)
-                    var skip = false;
-                    for (0..top_user_words.len) |j| {
-                        if (std.mem.eql(u8, dict_word.*, top_user_words.get(j).word)) {
-                            skip = true;
-                            break;
-                        }
-                    }
-
-                    if (!skip) {
-                        // Create a copy of the word
-                        const owned_suggestion = try self.allocator.dupe(u8, dict_word.*);
-                        try results.append(owned_suggestion);
-
-                        dict_count += 1;
-                        if (dict_count >= needed) break;
-                    }
-                }
-            }
-        }
-
-        // Update cache with these new suggestions
-        if (results.items.len > 0) {
-            self.cache.update(self.current_word, results.items);
+            try results.append(output);
         }
     }
 
-    /// Process text to extract and learn words
-    pub fn processText(self: *AutocompleteEngine, text: []const u8) !void {
-        var word_start: ?usize = null;
-
-        for (text, 0..) |char, i| {
-            if (insertion.isWordChar(char)) {
-                if (word_start == null) {
-                    word_start = i;
-                }
-            } else if (word_start != null) {
-                // End of a word found
-                const word = text[word_start.?..i];
-                try self.addWord(word);
-                word_start = null;
-            }
+    pub fn suggestionInfo(self: *const AutocompleteEngine, word: []const u8) SuggestionInfo {
+        var normalized: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+        const lower = normalizeWord(word, &normalized) orelse return .{ .personal = false, .score = 0 };
+        if (self.personal_words.get(lower)) |stats| {
+            return .{
+                .personal = true,
+                .score = personalScore(self.usage_clock, lower, stats, self.dictionary.rankOf(lower)) +
+                    caseMatchBonus(self.current_word),
+            };
         }
-
-        // Handle a word at the end of text
-        if (word_start != null) {
-            const word = text[word_start.?..];
-            try self.addWord(word);
-        }
+        const rank = self.dictionary.rankOf(lower) orelse return .{ .personal = false, .score = 0 };
+        return .{
+            .personal = false,
+            .score = dictionaryScore(rank, lower) + caseMatchBonus(self.current_word),
+        };
     }
 
-    /// Update the engine with a newly completed word
-    pub fn completeWord(self: *AutocompleteEngine, word: []const u8) !void {
-        try self.addWord(word);
-        self.current_word = "";
+    pub fn recordCount(self: *const AutocompleteEngine) usize {
+        return self.personal_order.items.len;
+    }
 
-        // Reset cache when a word is completed
-        self.cache.invalidate();
+    pub fn recordAt(self: *const AutocompleteEngine, index: usize) PersonalRecord {
+        const word = self.personal_order.items[index];
+        return .{ .word = word, .stats = self.personal_words.get(word).? };
+    }
+
+    pub fn restoreRecord(self: *AutocompleteEngine, word: []const u8, stats: PersonalStats) !void {
+        var normalized: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+        const lower = normalizeWord(word, &normalized) orelse return;
+        _ = try self.ensurePersonal(lower);
+        try self.personal_words.put(lower, stats);
+        self.usage_clock = @max(self.usage_clock, @max(stats.last_used, stats.last_accepted));
+    }
+
+    fn tick(self: *AutocompleteEngine) void {
+        self.usage_clock +%= 1;
+        if (self.usage_clock == 0) self.usage_clock = 1;
+    }
+
+    fn ensurePersonal(self: *AutocompleteEngine, lower: []const u8) !PersonalStats {
+        if (self.personal_words.get(lower)) |existing| return existing;
+        if (self.personal_order.items.len >= config.BEHAVIOR.MAX_USER_WORDS) self.evictWeakest();
+        const owned = try self.allocator.dupe(u8, lower);
+        errdefer self.allocator.free(owned);
+        try self.personal_words.put(owned, .{});
+        errdefer _ = self.personal_words.remove(owned);
+        const index = lexicalLowerBound(self.personal_order.items, owned);
+        try self.personal_order.insert(index, owned);
+        return .{};
+    }
+
+    fn evictWeakest(self: *AutocompleteEngine) void {
+        if (self.personal_order.items.len == 0) return;
+        var weakest: usize = 0;
+        var weakest_value = retentionValue(self.personal_words.get(self.personal_order.items[0]).?);
+        for (self.personal_order.items[1..], 1..) |word, index| {
+            const value = retentionValue(self.personal_words.get(word).?);
+            if (value < weakest_value or (value == weakest_value and index < weakest)) {
+                weakest = index;
+                weakest_value = value;
+            }
+        }
+        const word = self.personal_order.orderedRemove(weakest);
+        _ = self.personal_words.remove(word);
+        self.allocator.free(word);
     }
 };
+
+fn normalizeWord(word: []const u8, storage: []u8) ?[]const u8 {
+    if (word.len < config.BEHAVIOR.MIN_TRIGGER_LEN or word.len > storage.len) return null;
+    for (word, 0..) |character, index| {
+        if (!insertion.isWordChar(character)) return null;
+        storage[index] = std.ascii.toLower(character);
+    }
+    return storage[0..word.len];
+}
+
+fn dictionaryScore(rank: u32, word: []const u8) i32 {
+    const frequency = @as(i32, @intCast(@min(rank, 20_000)));
+    return 30_000 - frequency - @as(i32, @intCast(word.len * 3));
+}
+
+fn caseMatchBonus(prefix: []const u8) i32 {
+    // Output casing follows the prefix, so a candidate that can preserve that
+    // casing receives a small explicit score component.
+    return if (prefix.len != 0 and std.ascii.isAlphabetic(prefix[0])) 50 else 0;
+}
+
+fn personalScore(clock: u64, word: []const u8, stats: PersonalStats, base_rank: ?u32) i32 {
+    const age = clock -| stats.last_used;
+    const recency: i32 = @intCast(2000 - @min(age, 2000));
+    const typed: i32 = @intCast(@min(stats.typed_count, 1000));
+    const accepted: i32 = @intCast(@min(stats.accepted_count, 1000));
+    const ignores: i32 = @intCast(@min(stats.consecutive_ignores, 100));
+    const base = if (base_rank) |rank| dictionaryScore(rank, word) else 28_000;
+    return base + typed * 25 + accepted * 120 + recency - ignores * 80 - @as(i32, @intCast(word.len * 3));
+}
+
+fn retentionValue(stats: PersonalStats) u128 {
+    return @as(u128, stats.accepted_count) * 1_000_000_000 +
+        @as(u128, stats.typed_count) * 1_000_000 +
+        @as(u128, stats.last_used);
+}
+
+fn better(left: ScoredWord, right: ScoredWord) bool {
+    if (left.score != right.score) return left.score > right.score;
+    return std.mem.order(u8, left.word, right.word) == .lt;
+}
+
+fn insertTop(top: *std.BoundedArray(ScoredWord, MAX_SUGGESTIONS), candidate: ScoredWord) void {
+    if (top.len < MAX_SUGGESTIONS) {
+        top.append(candidate) catch unreachable;
+    } else if (!better(candidate, top.get(top.len - 1))) {
+        return;
+    } else {
+        top.set(top.len - 1, candidate);
+    }
+    var index = top.len - 1;
+    while (index > 0 and better(top.get(index), top.get(index - 1))) : (index -= 1) {
+        const previous = top.get(index - 1);
+        top.set(index - 1, top.get(index));
+        top.set(index, previous);
+    }
+}
+
+fn personalPrefixRange(words: []const []const u8, prefix: []const u8) dict.PrefixRange {
+    const start = lexicalLowerBound(words, prefix);
+    var end = start;
+    while (end < words.len and std.mem.startsWith(u8, words[end], prefix)) : (end += 1) {}
+    return .{ .start = start, .end = end };
+}
+
+fn lexicalLowerBound(words: []const []const u8, needle: []const u8) usize {
+    var low: usize = 0;
+    var high = words.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        if (std.mem.order(u8, words[middle], needle) == .lt)
+            low = middle + 1
+        else
+            high = middle;
+    }
+    return low;
+}

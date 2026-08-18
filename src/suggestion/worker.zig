@@ -6,7 +6,13 @@ const config = sysinput.core.config;
 const candidate_model = sysinput.suggestion.candidate;
 
 pub const WM_PREDICTION_READY = api.WM_APP + 1;
-pub const MAX_LEARNING_QUEUE: usize = 16;
+pub const MAX_FEEDBACK_QUEUE: usize = 64;
+const MAINTENANCE_INTERVAL_NS: u64 = 60 * std.time.ns_per_s;
+
+pub const FeedbackKind = enum(u8) {
+    shown,
+    accepted,
+};
 
 pub const PredictionRequest = struct {
     version: u64 = 0,
@@ -114,24 +120,27 @@ pub const PredictionResult = struct {
     }
 };
 
-const LearningItem = struct {
+const FeedbackItem = struct {
+    kind: FeedbackKind = .accepted,
     text: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
     len: u16 = 0,
 
-    fn set(self: *LearningItem, text: []const u8) void {
+    fn set(self: *FeedbackItem, kind: FeedbackKind, text: []const u8) void {
+        self.kind = kind;
         const len = @min(text.len, self.text.len);
         @memcpy(self.text[0..len], text[0..len]);
         self.len = @intCast(len);
     }
 
-    fn slice(self: *const LearningItem) []const u8 {
+    fn slice(self: *const FeedbackItem) []const u8 {
         return self.text[0..self.len];
     }
 };
 
 pub const ComputeCallback = *const fn (*const PredictionRequest, *PredictionResult) anyerror!void;
 pub const DeliverCallback = *const fn (*const PredictionResult) void;
-pub const LearnCallback = *const fn ([]const u8) anyerror!void;
+pub const FeedbackCallback = *const fn (FeedbackKind, []const u8) anyerror!void;
+pub const MaintenanceCallback = *const fn (bool) anyerror!void;
 
 var mutex = std.Thread.Mutex{};
 var condition = std.Thread.Condition{};
@@ -142,26 +151,33 @@ var request_pending = false;
 var latest_submitted_version: u64 = 0;
 var ready_result: PredictionResult = .{};
 var result_ready = false;
-var learning_queue: [MAX_LEARNING_QUEUE]LearningItem = undefined;
-var learning_head: usize = 0;
-var learning_count: usize = 0;
+var feedback_queue: [MAX_FEEDBACK_QUEUE]FeedbackItem = undefined;
+var feedback_head: usize = 0;
+var feedback_count: usize = 0;
 var ui_thread_id: api.DWORD = 0;
 var compute_callback: ComputeCallback = undefined;
 var deliver_callback: DeliverCallback = undefined;
-var learn_callback: LearnCallback = undefined;
+var feedback_callback: FeedbackCallback = undefined;
+var maintenance_callback: MaintenanceCallback = undefined;
 
-pub fn init(compute: ComputeCallback, deliver: DeliverCallback, learn: LearnCallback) !void {
+pub fn init(
+    compute: ComputeCallback,
+    deliver: DeliverCallback,
+    feedback: FeedbackCallback,
+    maintenance: MaintenanceCallback,
+) !void {
     if (worker_thread != null) return;
     compute_callback = compute;
     deliver_callback = deliver;
-    learn_callback = learn;
+    feedback_callback = feedback;
+    maintenance_callback = maintenance;
     ui_thread_id = api.GetCurrentThreadId();
     stopping = false;
     request_pending = false;
     result_ready = false;
     latest_submitted_version = 0;
-    learning_head = 0;
-    learning_count = 0;
+    feedback_head = 0;
+    feedback_count = 0;
     worker_thread = try std.Thread.spawn(.{}, workerMain, .{});
 }
 
@@ -189,17 +205,25 @@ pub fn submitPrediction(text: []const u8, word: []const u8) u64 {
 }
 
 pub fn submitLearnedWord(word: []const u8) void {
+    submitFeedback(.accepted, word);
+}
+
+pub fn submitShownWord(word: []const u8) void {
+    submitFeedback(.shown, word);
+}
+
+fn submitFeedback(kind: FeedbackKind, word: []const u8) void {
     if (word.len == 0) return;
     mutex.lock();
     defer mutex.unlock();
 
-    if (learning_count == learning_queue.len) {
-        learning_head = (learning_head + 1) % learning_queue.len;
-        learning_count -= 1;
+    if (feedback_count == feedback_queue.len) {
+        feedback_head = (feedback_head + 1) % feedback_queue.len;
+        feedback_count -= 1;
     }
-    const tail = (learning_head + learning_count) % learning_queue.len;
-    learning_queue[tail].set(word);
-    learning_count += 1;
+    const tail = (feedback_head + feedback_count) % feedback_queue.len;
+    feedback_queue[tail].set(kind, word);
+    feedback_count += 1;
     condition.signal();
 }
 
@@ -225,37 +249,52 @@ pub fn latestVersion() u64 {
     return latest_submitted_version;
 }
 
-fn popLearningLocked() ?LearningItem {
-    if (learning_count == 0) return null;
-    const item = learning_queue[learning_head];
-    learning_head = (learning_head + 1) % learning_queue.len;
-    learning_count -= 1;
+fn popFeedbackLocked() ?FeedbackItem {
+    if (feedback_count == 0) return null;
+    const item = feedback_queue[feedback_head];
+    feedback_head = (feedback_head + 1) % feedback_queue.len;
+    feedback_count -= 1;
     return item;
 }
 
 fn workerMain() void {
     while (true) {
         var request: ?PredictionRequest = null;
-        var learning: ?LearningItem = null;
+        var feedback: ?FeedbackItem = null;
+        var maintenance_due = false;
 
         mutex.lock();
-        while (!stopping and !request_pending and learning_count == 0) {
-            condition.wait(&mutex);
+        while (!stopping and !request_pending and feedback_count == 0) {
+            condition.timedWait(&mutex, MAINTENANCE_INTERVAL_NS) catch |err| switch (err) {
+                error.Timeout => {
+                    maintenance_due = true;
+                    break;
+                },
+            };
         }
-        if (stopping) {
+        if (stopping and feedback_count == 0) {
             mutex.unlock();
+            maintenance_callback(true) catch |err| {
+                std.debug.print("Final profile save failed: {}\n", .{err});
+            };
             return;
         }
-        learning = popLearningLocked();
-        if (request_pending) {
+        feedback = popFeedbackLocked();
+        if (!stopping and request_pending) {
             request = pending_request;
             request_pending = false;
         }
         mutex.unlock();
 
-        if (learning) |item| {
-            learn_callback(item.slice()) catch |err| {
-                std.debug.print("Prediction learning task failed: {}\n", .{err});
+        if (feedback) |item| {
+            feedback_callback(item.kind, item.slice()) catch |err| {
+                std.debug.print("Prediction feedback task failed: {}\n", .{err});
+            };
+        }
+
+        if (maintenance_due or feedback != null or request != null) {
+            maintenance_callback(false) catch |err| {
+                std.debug.print("Profile maintenance failed: {}\n", .{err});
             };
         }
 

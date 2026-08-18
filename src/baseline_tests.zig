@@ -6,6 +6,7 @@ const buffer = sysinput.core.buffer;
 const config = sysinput.core.config;
 const dictionary = sysinput.text.dictionary;
 const autocomplete = sysinput.text.autocomplete;
+const personal_profile = sysinput.text.personal_profile;
 const edit_distance = sysinput.text.edit_distance;
 const insertion = sysinput.win32.insertion;
 const stats = sysinput.suggestion.stats;
@@ -18,6 +19,7 @@ const keyboard = sysinput.input.keyboard;
 
 var worker_test_mutex = std.Thread.Mutex{};
 var worker_test_learned = false;
+var worker_test_maintenance_forced = false;
 var worker_test_delivered_version: u64 = 0;
 var worker_test_delivered_word: [32]u8 = undefined;
 var worker_test_delivered_word_len: usize = 0;
@@ -43,10 +45,17 @@ fn testWorkerDeliver(result: *const prediction_worker.PredictionResult) void {
     @memcpy(worker_test_delivered_word[0..worker_test_delivered_word_len], word[0..worker_test_delivered_word_len]);
 }
 
-fn testWorkerLearn(word: []const u8) !void {
+fn testWorkerLearn(kind: prediction_worker.FeedbackKind, word: []const u8) !void {
     worker_test_mutex.lock();
     defer worker_test_mutex.unlock();
-    worker_test_learned = std.mem.eql(u8, word, "accepted");
+    worker_test_learned = kind == .accepted and std.mem.eql(u8, word, "accepted");
+}
+
+fn testWorkerMaintenance(force: bool) !void {
+    if (!force) return;
+    worker_test_mutex.lock();
+    defer worker_test_mutex.unlock();
+    worker_test_maintenance_forced = true;
 }
 
 const BaselineTestError = error{BaselineTestFailed};
@@ -183,12 +192,12 @@ fn testPredictionWorker() !void {
 
     worker_test_mutex.lock();
     worker_test_learned = false;
+    worker_test_maintenance_forced = false;
     worker_test_mutex.unlock();
     worker_test_delivered_version = 0;
     worker_test_delivered_word_len = 0;
 
-    try prediction_worker.init(testWorkerCompute, testWorkerDeliver, testWorkerLearn);
-    defer prediction_worker.deinit();
+    try prediction_worker.init(testWorkerCompute, testWorkerDeliver, testWorkerLearn, testWorkerMaintenance);
 
     _ = prediction_worker.submitPrediction("hello", "hel");
 
@@ -225,6 +234,11 @@ fn testPredictionWorker() !void {
     const learned = worker_test_learned;
     worker_test_mutex.unlock();
     try expect(learned);
+    prediction_worker.deinit();
+    worker_test_mutex.lock();
+    const maintenance_forced = worker_test_maintenance_forced;
+    worker_test_mutex.unlock();
+    try expect(maintenance_forced);
 }
 
 fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
@@ -282,6 +296,12 @@ fn testDictionary(allocator: std.mem.Allocator) !void {
     try expect(words.word_map.count() > 1000);
     try expect(words.contains("the"));
     try expect(words.contains("THE"));
+    try expect(words.rankOf("the").? < words.rankOf("configuration").?);
+    const range = words.prefixRange("conf");
+    try expect(range.end > range.start);
+    for (words.ranked_words.items[range.start..range.end]) |entry| {
+        try expect(std.mem.startsWith(u8, entry.text, "conf"));
+    }
 }
 
 fn testPersonalFrequency(allocator: std.mem.Allocator) !void {
@@ -326,6 +346,79 @@ fn testAutocompleteCacheOwnership(allocator: std.mem.Allocator) !void {
     for (suggestions.items) |text| try expect(std.mem.startsWith(u8, text, "pre"));
 }
 
+fn testDeterministicRanking(allocator: std.mem.Allocator) !void {
+    var words = try dictionary.Dictionary.init(allocator);
+    defer words.deinit();
+    var engine = try autocomplete.AutocompleteEngine.init(allocator, &words);
+    defer engine.deinit();
+    var first = std.ArrayList([]const u8).init(allocator);
+    defer freeSuggestions(allocator, &first);
+    var second = std.ArrayList([]const u8).init(allocator);
+    defer freeSuggestions(allocator, &second);
+
+    engine.setCurrentWord("con");
+    try engine.getSuggestions(&first);
+    try engine.getSuggestions(&second);
+    try expect(first.items.len == second.items.len);
+    for (first.items, second.items) |left, right| try expectEqualStrings(left, right);
+}
+
+fn testSnapshotLearnsOnce(allocator: std.mem.Allocator) !void {
+    var words = try dictionary.Dictionary.init(allocator);
+    defer words.deinit();
+    var engine = try autocomplete.AutocompleteEngine.init(allocator, &words);
+    defer engine.deinit();
+
+    try engine.processTextSnapshot(1, "hello");
+    try engine.processTextSnapshot(1, "hello ");
+    try engine.processTextSnapshot(1, "hello ");
+    const stats_for_word = engine.personal_words.get("hello") orelse return error.BaselineTestFailed;
+    try expect(stats_for_word.typed_count == 1);
+}
+
+fn testProfileRoundTripAndCorruption(allocator: std.mem.Allocator) !void {
+    var words = try dictionary.Dictionary.init(allocator);
+    defer words.deinit();
+    var source = try autocomplete.AutocompleteEngine.init(allocator, &words);
+    defer source.deinit();
+    try source.recordTyped("codexpersisted");
+    try source.recordAccepted("codexpersisted");
+    try source.recordShown("codexpersisted");
+
+    const bytes = try personal_profile.encode(allocator, &source);
+    defer allocator.free(bytes);
+    var restored = try autocomplete.AutocompleteEngine.init(allocator, &words);
+    defer restored.deinit();
+    try personal_profile.decodeInto(&restored, bytes);
+    const restored_stats = restored.personal_words.get("codexpersisted") orelse return error.BaselineTestFailed;
+    try expect(restored_stats.typed_count == 1);
+    try expect(restored_stats.accepted_count == 1);
+    try expect(restored_stats.shown_count == 1);
+
+    const damaged = try allocator.dupe(u8, bytes);
+    defer allocator.free(damaged);
+    damaged[damaged.len - 1] ^= 0xff;
+    var rejected = try autocomplete.AutocompleteEngine.init(allocator, &words);
+    defer rejected.deinit();
+    try expect(personal_profile.decodeInto(&rejected, damaged) == error.InvalidProfile);
+    try expect(rejected.recordCount() == 0);
+}
+
+fn testPersonalVocabularyBound(allocator: std.mem.Allocator) !void {
+    var words = try dictionary.Dictionary.init(allocator);
+    defer words.deinit();
+    var engine = try autocomplete.AutocompleteEngine.init(allocator, &words);
+    defer engine.deinit();
+    var storage: [32]u8 = undefined;
+    for (0..config.BEHAVIOR.MAX_USER_WORDS + 1) |index| {
+        const word = try std.fmt.bufPrint(&storage, "personalword{d}", .{index});
+        try engine.recordTyped(word);
+    }
+    try expect(engine.recordCount() == config.BEHAVIOR.MAX_USER_WORDS);
+    try expect(engine.personal_words.get("personalword0") == null);
+    try expect(engine.personal_words.get("personalword10000") != null);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -340,6 +433,10 @@ pub fn main() !void {
         .{ .name = "bundled dictionary", .run = testDictionary },
         .{ .name = "personal frequency priority", .run = testPersonalFrequency },
         .{ .name = "autocomplete cache ownership", .run = testAutocompleteCacheOwnership },
+        .{ .name = "deterministic ranking", .run = testDeterministicRanking },
+        .{ .name = "snapshot learns once", .run = testSnapshotLearnsOnce },
+        .{ .name = "profile round trip and corrupt fallback", .run = testProfileRoundTripAndCorruption },
+        .{ .name = "personal vocabulary bound", .run = testPersonalVocabularyBound },
         .{ .name = "lifecycle and startup contracts", .run = testLifecycleContracts },
     };
 
@@ -359,5 +456,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 13/13 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 17/17 checks passed\n");
 }

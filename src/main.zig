@@ -55,7 +55,12 @@ pub fn main() !void {
 
     // Start the bounded prediction worker before the hook begins submitting
     // snapshots. Registered after manager so it is stopped first on shutdown.
-    try prediction_worker.init(manager.computePrediction, manager.applyPrediction, manager.learnAcceptedWord);
+    try prediction_worker.init(
+        manager.computePrediction,
+        manager.applyPrediction,
+        manager.recordPredictionFeedback,
+        manager.maintainPersonalProfile,
+    );
     defer prediction_worker.deinit();
 
     debug.debugPrint("Starting SysInput...\n", .{});

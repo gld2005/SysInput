@@ -14,6 +14,7 @@ const stats = sysinput.suggestion.stats;
 const config = sysinput.core.config;
 const candidate_model = sysinput.suggestion.candidate;
 const prediction_worker = sysinput.suggestion.worker;
+const personal_profile = sysinput.text.personal_profile;
 
 const CandidateTextStorage = struct {
     display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
@@ -46,6 +47,10 @@ var applied_text_len: usize = 0;
 var applied_word: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
 var applied_word_len: usize = 0;
 var latest_applied_version: u64 = 0;
+var profile_store: personal_profile.ProfileStore = undefined;
+var profile_initialized = false;
+var saved_profile_revision: u64 = 0;
+var last_profile_save_ms: i64 = 0;
 
 /// Global UI for autocompletion suggestions
 pub var autocomplete_ui_manager: suggestion_ui.AutocompleteUI = undefined;
@@ -72,6 +77,15 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
     // Initialize autocompletion engine
     autocomplete_engine = try autocomplete.AutocompleteEngine.init(allocator, &spell_checker.dictionary);
 
+    profile_store = try personal_profile.ProfileStore.initDefault(allocator);
+    profile_initialized = true;
+    profile_store.load(&autocomplete_engine) catch |err| {
+        // A damaged or unsupported profile must never prevent input startup.
+        debug.debugPrint("Personal profile ignored: {}\n", .{err});
+    };
+    saved_profile_revision = autocomplete_engine.revision;
+    last_profile_save_ms = std.time.milliTimestamp();
+
     // Initialize UI
     autocomplete_ui_manager = try suggestion_ui.AutocompleteUI.init(allocator, module_instance);
 
@@ -89,7 +103,8 @@ pub fn computePrediction(
     request: *const prediction_worker.PredictionRequest,
     result: *prediction_worker.PredictionResult,
 ) !void {
-    try autocomplete_engine.processText(request.textSlice());
+    const target_id: usize = if (request.target_window) |window| @intFromPtr(window) else 0;
+    try autocomplete_engine.processTextSnapshot(target_id, request.textSlice());
     autocomplete_engine.setCurrentWord(request.wordSlice());
     defer autocomplete_engine.setCurrentWord("");
 
@@ -101,21 +116,17 @@ pub fn computePrediction(
     try autocomplete_engine.getSuggestions(&generated);
 
     for (generated.items) |text| {
-        const personal_frequency = autocomplete_engine.user_words.get(text);
-        const source: candidate_model.CandidateSource = if (personal_frequency != null)
+        const info = autocomplete_engine.suggestionInfo(text);
+        const source: candidate_model.CandidateSource = if (info.personal)
             .personal_frequency
         else
             .dictionary;
-        const score: i32 = if (personal_frequency) |frequency|
-            @intCast(@min(frequency, @as(u32, std.math.maxInt(i32))))
-        else
-            0;
-        const confidence: u16 = if (personal_frequency != null) 700 else 500;
+        const confidence: u16 = if (info.personal) 700 else 500;
         var structured = try candidate_model.Candidate.wordCompletion(
             text,
             request.word_len,
             source,
-            score,
+            info.score,
             confidence,
         );
         if (!result.addCandidate(&structured)) break;
@@ -123,8 +134,22 @@ pub fn computePrediction(
 }
 
 /// Runs on the worker for accepted-word learning, never in the keyboard hook.
-pub fn learnAcceptedWord(word: []const u8) !void {
-    try autocomplete_engine.completeWord(word);
+pub fn recordPredictionFeedback(kind: prediction_worker.FeedbackKind, word: []const u8) !void {
+    switch (kind) {
+        .shown => try autocomplete_engine.recordShown(word),
+        .accepted => try autocomplete_engine.completeWord(word),
+    }
+}
+
+/// Runs only on the prediction worker. Regular calls are cheap revision/time
+/// checks; shutdown forces the final atomic save.
+pub fn maintainPersonalProfile(force: bool) !void {
+    if (!profile_initialized or autocomplete_engine.revision == saved_profile_revision) return;
+    const now = std.time.milliTimestamp();
+    if (!force and now - last_profile_save_ms < 60_000) return;
+    try profile_store.save(&autocomplete_engine);
+    saved_profile_revision = autocomplete_engine.revision;
+    last_profile_save_ms = now;
 }
 
 /// Runs on the Windows message thread. It copies the fixed worker result into
@@ -223,6 +248,12 @@ pub fn showSuggestions(current_text: []const u8, current_word: []const u8, x: i3
 
             // Show suggestions at the specified position
             try autocomplete_ui_manager.showSuggestions(autocomplete_suggestions.items, x, y);
+
+            // Per-word exposure is queued back to the prediction thread. This
+            // keeps scoring state single-threaded and enables ignore penalties.
+            for (autocomplete_candidates.items) |candidate| {
+                prediction_worker.submitShownWord(candidate.insert_text);
+            }
 
             // Update stats
             if (config.STATS.COLLECT_STATS) {
@@ -694,5 +725,9 @@ pub fn deinit() void {
 
     spell_checker.deinit();
     autocomplete_engine.deinit();
+    if (profile_initialized) {
+        profile_store.deinit();
+        profile_initialized = false;
+    }
     autocomplete_ui_manager.deinit();
 }

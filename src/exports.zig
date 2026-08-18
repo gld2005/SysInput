@@ -22,6 +22,7 @@ pub const suggestion = struct {
 pub const text = struct {
     pub const autocomplete = @import("text/autocomplete.zig");
     pub const dictionary = @import("text/dictionary.zig");
+    pub const personal_profile = @import("text/personal_profile.zig");
     pub const edit_distance = @import("text/edit_distance.zig");
     pub const spellcheck = @import("text/spellcheck.zig");
 };
