@@ -21,15 +21,28 @@ pub const SuggestionKeyAction = enum {
     pass,
 };
 
-pub fn suggestionKeyAction(virtual_key: api.DWORD) SuggestionKeyAction {
-    return switch (virtual_key) {
-        win32.VK_UP => .previous,
-        win32.VK_DOWN => .next,
-        win32.VK_TAB => .accept_chunk,
-        win32.VK_RIGHT => .accept_word,
-        win32.VK_ESCAPE => .hide,
-        else => .pass,
-    };
+pub fn suggestionKeyAction(
+    virtual_key: api.DWORD,
+    modifiers: key_decoder.ModifierState,
+) SuggestionKeyAction {
+    if (!modifiers.shift and !modifiers.ctrl and !modifiers.alt) {
+        return switch (virtual_key) {
+            win32.VK_TAB => .accept_chunk,
+            win32.VK_ESCAPE => .hide,
+            else => .pass,
+        };
+    }
+    if (modifiers.ctrl and !modifiers.shift and !modifiers.alt and virtual_key == win32.VK_RIGHT) {
+        return .accept_word;
+    }
+    if (modifiers.alt and !modifiers.shift and !modifiers.ctrl) {
+        return switch (virtual_key) {
+            win32.VK_UP => .previous,
+            win32.VK_DOWN => .next,
+            else => .pass,
+        };
+    }
+    return .pass;
 }
 
 pub fn setupKeyboardHook() !win32.HHOOK {
@@ -52,17 +65,16 @@ fn isKeyUp(message: win32.WPARAM) bool {
     return message == win32.WM_KEYUP or message == win32.WM_SYSKEYUP;
 }
 
-fn processSuggestionNavigation(kbd: *const win32.KBDLLHOOKSTRUCT) win32.LRESULT {
+fn processSuggestionNavigation(kbd: *const win32.KBDLLHOOKSTRUCT) bool {
     debug.debugPrint("Suggestion navigation key: 0x{X}\n", .{kbd.vkCode});
 
-    switch (suggestionKeyAction(kbd.vkCode)) {
+    return switch (suggestionKeyAction(kbd.vkCode, decoder.modifiers)) {
         .previous => manager.navigateToPreviousSuggestion(),
         .next => manager.navigateToNextSuggestion(),
         .accept_chunk => manager.acceptCurrentSuggestion(.chunk),
         .accept_word => manager.acceptCurrentSuggestion(.word),
-        else => return 0,
-    }
-    return 1;
+        else => false,
+    };
 }
 
 fn refreshSuggestions() void {
@@ -85,14 +97,18 @@ fn processCtrlBackspace(kbd: *const win32.KBDLLHOOKSTRUCT) bool {
 
 fn processNavigationWithoutSuggestions(kbd: *const win32.KBDLLHOOKSTRUCT) bool {
     switch (kbd.vkCode) {
-        win32.VK_LEFT => {
+        win32.VK_LEFT, win32.VK_RIGHT => {
+            manager.hideSuggestions();
+            if (decoder.modifiers.shift or decoder.modifiers.ctrl or decoder.modifiers.alt) {
+                buffer_controller.invalidatePhysicalInputState();
+                return true;
+            }
             buffer_controller.prepareForPhysicalInput();
-            buffer_controller.recordPhysicalCursorLeft();
-            refreshSuggestions();
-        },
-        win32.VK_RIGHT => {
-            buffer_controller.prepareForPhysicalInput();
-            buffer_controller.recordPhysicalCursorRight();
+            if (kbd.vkCode == win32.VK_LEFT) {
+                buffer_controller.recordPhysicalCursorLeft();
+            } else {
+                buffer_controller.recordPhysicalCursorRight();
+            }
             refreshSuggestions();
         },
         win32.VK_UP,
@@ -174,9 +190,11 @@ fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) ca
     if (!down) return win32.CallNextHookEx(null, nCode, wParam, lParam);
 
     if (manager.isSuggestionUIVisible()) {
-        switch (suggestionKeyAction(kbd.vkCode)) {
-            .previous, .next => return processSuggestionNavigation(kbd),
-            .accept_chunk, .accept_word => return processSuggestionNavigation(kbd),
+        switch (suggestionKeyAction(kbd.vkCode, decoder.modifiers)) {
+            .previous, .next, .accept_chunk, .accept_word => {
+                if (processSuggestionNavigation(kbd)) return 1;
+                return win32.CallNextHookEx(null, nCode, wParam, lParam);
+            },
             .hide => {
                 manager.hideSuggestions();
                 return win32.CallNextHookEx(null, nCode, wParam, lParam);
@@ -194,6 +212,10 @@ fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) ca
     }
 
     if (decoder.modifiers.ctrl or decoder.modifiers.alt or key_decoder.isModifier(kbd.vkCode)) {
+        if (decoder.modifiers.ctrl or decoder.modifiers.alt) {
+            manager.hideSuggestions();
+            buffer_controller.invalidatePhysicalInputState();
+        }
         return win32.CallNextHookEx(null, nCode, wParam, lParam);
     }
 

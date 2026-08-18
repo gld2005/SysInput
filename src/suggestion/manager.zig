@@ -13,11 +13,13 @@ const window_detection = sysinput.input.window_detection;
 const stats = sysinput.suggestion.stats;
 const config = sysinput.core.config;
 const candidate_model = sysinput.suggestion.candidate;
+const lease_model = sysinput.suggestion.lease;
 const prediction_worker = sysinput.suggestion.worker;
 const personal_profile = sysinput.text.personal_profile;
 const context_prediction = sysinput.text.context_prediction;
 const sentence_prediction = sysinput.text.sentence_prediction;
 const text_inject = sysinput.win32.text_inject;
+const suggestion_window = sysinput.ui.window;
 
 const CandidateTextStorage = struct {
     display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
@@ -52,6 +54,7 @@ var applied_text_len: usize = 0;
 var applied_word: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
 var applied_word_len: usize = 0;
 var latest_applied_version: u64 = 0;
+var candidate_lease = lease_model.Lease{};
 var profile_store: personal_profile.ProfileStore = undefined;
 var profile_initialized = false;
 var context_profile_store: context_prediction.ContextProfileStore = undefined;
@@ -69,6 +72,53 @@ pub var autocomplete_ui_manager: suggestion_ui.AutocompleteUI = undefined;
 pub fn clearSuggestions() void {
     autocomplete_candidates.clearRetainingCapacity();
     autocomplete_suggestions.clearRetainingCapacity();
+}
+
+fn windowId(window: ?api.HWND) usize {
+    return if (window) |handle| @intFromPtr(handle) else 0;
+}
+
+fn selectionId(window: ?api.HWND) usize {
+    const handle = window orelse return 0;
+    return @bitCast(api.SendMessageA(handle, api.EM_GETSEL, 0, 0));
+}
+
+fn invalidateCandidateLease() void {
+    candidate_lease.invalidate();
+}
+
+fn bindCandidateLease(version: u64, target: ?api.HWND) void {
+    const focus = api.getFocusedWindow();
+    const caret = position.getCaretAnchor();
+    candidate_lease.bind(
+        version,
+        windowId(target),
+        windowId(focus),
+        selectionId(focus),
+        caret != null,
+        if (caret) |point| point.x else 0,
+        if (caret) |point| point.y else 0,
+    );
+}
+
+fn candidateLeaseIsCurrent() bool {
+    const target = api.GetForegroundWindow();
+    const focus = api.getFocusedWindow();
+    const caret = position.getCaretAnchor();
+    if (!candidate_lease.matches(
+        prediction_worker.latestVersion(),
+        windowId(target),
+        windowId(focus),
+        selectionId(focus),
+        caret != null,
+        if (caret) |point| point.x else 0,
+        if (caret) |point| point.y else 0,
+    )) return false;
+
+    const current_text = buffer_controller.getCurrentText();
+    const current_word = buffer_controller.getCurrentWord() catch return false;
+    return std.mem.eql(u8, current_text, applied_text[0..applied_text_len]) and
+        std.mem.eql(u8, current_word, applied_word[0..applied_word_len]);
 }
 
 /// Initialize suggestion handling components
@@ -114,12 +164,12 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
     // Initialize UI
     autocomplete_ui_manager = try suggestion_ui.AutocompleteUI.init(allocator, module_instance);
 
-    // Set callback
-    autocomplete_ui_manager.setSelectionCallback(handleSuggestionSelection);
+    suggestion_window.setSuggestionClickCallback(handleSuggestionClick);
 
     // Reset stats
     stats_instance = sysinput.suggestion.stats.init();
     latest_applied_version = 0;
+    invalidateCandidateLease();
 }
 
 /// Runs only on the prediction worker. The engine and in-memory frequency map
@@ -299,6 +349,7 @@ pub fn applyPrediction(result: *const prediction_worker.PredictionResult) void {
         debug.debugPrint("Failed to apply worker prediction: {}\n", .{err});
         hideSuggestions();
     };
+    if (autocomplete_ui_manager.is_visible) bindCandidateLease(result.version, result.target_window);
 }
 
 /// Check if a word is spelled correctly
@@ -557,13 +608,6 @@ pub fn replaceSuggestionWord(current_word: []const u8, suggestion: []const u8) b
     return success;
 }
 
-fn findCandidateByDisplayText(text: []const u8) ?*const candidate_model.Candidate {
-    for (autocomplete_candidates.items) |*candidate| {
-        if (std.mem.eql(u8, candidate.display_text, text)) return candidate;
-    }
-    return null;
-}
-
 fn getSelectedCandidate() ?*const candidate_model.Candidate {
     const index = autocomplete_ui_manager.selected_index;
     if (index < 0) return null;
@@ -572,45 +616,27 @@ fn getSelectedCandidate() ?*const candidate_model.Candidate {
     return &autocomplete_candidates.items[item_index];
 }
 
-/// Handle suggestion selection from the autocomplete UI
-pub fn handleSuggestionSelection(suggestion: []const u8) void {
-    const candidate = findCandidateByDisplayText(suggestion) orelse {
-        debug.debugPrint("No structured candidate for UI selection: '{s}'\n", .{suggestion});
-        return;
-    };
-    if (candidate.kind != .word_completion) {
-        acceptProgressiveCandidate(candidate, .chunk);
+fn handleSuggestionClick(index: usize) void {
+    if (index >= autocomplete_candidates.items.len) {
+        hideSuggestions();
         return;
     }
-
-    debug.debugPrint("Handling candidate selection for: '{s}'\n", .{candidate.display_text});
-
-    const current_word = buffer_controller.getCurrentWord() catch {
-        debug.debugPrint("Error getting current word\n", .{});
-        return;
-    };
-
-    // If there's a current word, replace it with the suggestion
-    if (current_word.len > 0) {
-        debug.debugPrint("Current word: '{s}'\n", .{current_word});
-
-        // Simply call replaceSuggestionWord which contains all the logic
-        if (replaceSuggestionWord(current_word, candidate.insert_text)) {
-            // Update stats
-            sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
-        }
-    }
-    hideSuggestions();
+    autocomplete_ui_manager.selectSuggestion(@intCast(index));
+    _ = acceptCurrentSuggestion(.chunk);
 }
 
 /// Accept the current suggestion
-pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) void {
-    if (!autocomplete_ui_manager.is_visible) return;
+pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) bool {
+    if (!autocomplete_ui_manager.is_visible) return false;
+    if (!candidateLeaseIsCurrent()) {
+        debug.debugPrint("Rejected stale suggestion lease\n", .{});
+        hideSuggestions();
+        return false;
+    }
 
-    const candidate = getSelectedCandidate() orelse return;
+    const candidate = getSelectedCandidate() orelse return false;
     if (candidate.kind != .word_completion) {
-        acceptProgressiveCandidate(candidate, mode);
-        return;
+        return acceptProgressiveCandidate(candidate, mode);
     }
     const suggestion = candidate.insert_text;
     debug.debugPrint(
@@ -621,12 +647,12 @@ pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) void {
     // Get the current word
     const current_word = buffer_controller.getCurrentWord() catch {
         debug.debugPrint("Error getting current word\n", .{});
-        return;
+        return false;
     };
 
     if (current_word.len == 0) {
         debug.debugPrint("No current word to replace\n", .{});
-        return;
+        return false;
     }
 
     if (candidate.replace_length != current_word.len) {
@@ -642,7 +668,7 @@ pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) void {
     var target_hwnd: ?api.HWND = null;
 
     // 1. First try GetFocus to get directly focused control
-    target_hwnd = api.getFocus();
+    target_hwnd = api.getFocusedWindow();
     if (target_hwnd != null) {
         debug.debugPrint("Using focused window\n", .{});
     }
@@ -659,7 +685,8 @@ pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) void {
 
     if (target_hwnd == null) {
         debug.debugPrint("Could not find any target window\n", .{});
-        return;
+        hideSuggestions();
+        return false;
     }
 
     // Try to ensure window has focus
@@ -742,36 +769,37 @@ pub fn acceptCurrentSuggestion(mode: candidate_model.AcceptanceMode) void {
 
     // Hide suggestions UI regardless of success
     hideSuggestions();
+    return success;
 }
 
 fn acceptProgressiveCandidate(
     candidate: *const candidate_model.Candidate,
     mode: candidate_model.AcceptanceMode,
-) void {
-    const current_word = buffer_controller.getCurrentWord() catch return;
+) bool {
+    const current_word = buffer_controller.getCurrentWord() catch return false;
     if (current_word.len != 0) {
         debug.debugPrint("Context changed before candidate acceptance\n", .{});
         hideSuggestions();
-        return;
+        return false;
     }
 
-    const target = api.getFocus() orelse api.getForegroundWindow() orelse {
+    const target = api.getFocusedWindow() orelse {
         hideSuggestions();
-        return;
+        return false;
     };
     const acceptance = candidate.acceptance(mode) orelse {
         hideSuggestions();
-        return;
+        return false;
     };
 
     var accepted_storage: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
-    if (acceptance.text.len > accepted_storage.len) return;
+    if (acceptance.text.len > accepted_storage.len) return false;
     @memcpy(accepted_storage[0..acceptance.text.len], acceptance.text);
     const accepted = accepted_storage[0..acceptance.text.len];
 
     const remaining_source = candidate.remainingAfter(acceptance);
     var remaining_storage: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
-    if (remaining_source.len > remaining_storage.len) return;
+    if (remaining_source.len > remaining_storage.len) return false;
     @memcpy(remaining_storage[0..remaining_source.len], remaining_source);
     const remaining = remaining_storage[0..remaining_source.len];
     const kind = candidate.kind;
@@ -780,7 +808,7 @@ fn acceptProgressiveCandidate(
     const confidence = candidate.confidence;
 
     var payload: [config.TEXT.MAX_SUGGESTION_LEN + 1]u8 = undefined;
-    if (accepted.len + 1 > payload.len) return;
+    if (accepted.len + 1 > payload.len) return false;
     @memcpy(payload[0..accepted.len], accepted);
     payload[accepted.len] = ' ';
     const insertion_text = payload[0 .. accepted.len + 1];
@@ -789,7 +817,7 @@ fn acceptProgressiveCandidate(
     if (!text_inject.insertTextAsSelection(target, insertion_text)) {
         debug.debugPrint("Progressive insertion failed for '{s}'\n", .{accepted});
         hideSuggestions();
-        return;
+        return false;
     }
 
     buffer_controller.recordInjectedText(insertion_text) catch {
@@ -799,15 +827,18 @@ fn acceptProgressiveCandidate(
     sysinput.suggestion.stats.recordInsertionSuccess(&stats_instance);
     sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
 
-    if (remaining.len == 0) {
+    const retained = if (remaining.len == 0) blk: {
         hideSuggestions();
-    } else {
-        retainProgressiveRemainder(kind, source, score, confidence, remaining);
-    }
+        break :blk false;
+    } else retainProgressiveRemainder(kind, source, score, confidence, remaining);
 
     const updated_text = buffer_controller.getCurrentText();
     const updated_word = buffer_controller.getCurrentWord() catch "";
-    _ = prediction_worker.submitPrediction(updated_text, updated_word);
+    const version = prediction_worker.submitPrediction(updated_text, updated_word);
+    if (retained and autocomplete_ui_manager.is_visible) {
+        bindCandidateLease(version, api.GetForegroundWindow());
+    }
+    return true;
 }
 
 fn retainProgressiveRemainder(
@@ -816,7 +847,7 @@ fn retainProgressiveRemainder(
     score: i32,
     confidence: u16,
     remaining: []const u8,
-) void {
+) bool {
     clearSuggestions();
     @memcpy(candidate_text_storage[0].display[0..remaining.len], remaining);
     @memcpy(candidate_text_storage[0].insert[0..remaining.len], remaining);
@@ -830,12 +861,12 @@ fn retainProgressiveRemainder(
         confidence,
     ) catch {
         hideSuggestions();
-        return;
+        return false;
     };
     structured.chunk_count = candidate_model.buildCompletionChunks(structured.insert_text, &structured.chunks);
     if (!structured.isValid() or structured.chunk_count == 0) {
         hideSuggestions();
-        return;
+        return false;
     }
     autocomplete_candidates.appendAssumeCapacity(structured);
     autocomplete_suggestions.appendAssumeCapacity(structured.display_text);
@@ -848,11 +879,14 @@ fn retainProgressiveRemainder(
     showSuggestions(applied_text[0..applied_text_len], "", caret.x, caret.y) catch |err| {
         debug.debugPrint("Failed to retain progressive remainder: {}\n", .{err});
         hideSuggestions();
+        return false;
     };
+    return autocomplete_ui_manager.is_visible;
 }
 
 /// Hide suggestions UI
 pub fn hideSuggestions() void {
+    invalidateCandidateLease();
     autocomplete_ui_manager.hideSuggestions();
 }
 
@@ -880,8 +914,12 @@ pub fn isSuggestionUIVisible() bool {
 }
 
 /// Navigate to previous suggestion
-pub fn navigateToPreviousSuggestion() void {
-    if (autocomplete_candidates.items.len == 0) return;
+pub fn navigateToPreviousSuggestion() bool {
+    if (!candidateLeaseIsCurrent()) {
+        hideSuggestions();
+        return false;
+    }
+    if (autocomplete_candidates.items.len == 0) return false;
     // Move to previous suggestion
     const new_index = if (autocomplete_ui_manager.selected_index <= 0)
         @as(i32, @intCast(autocomplete_candidates.items.len - 1))
@@ -890,11 +928,16 @@ pub fn navigateToPreviousSuggestion() void {
 
     autocomplete_ui_manager.selectSuggestion(new_index);
     debug.debugPrint("Selected previous suggestion (index {})\n", .{new_index});
+    return true;
 }
 
 /// Navigate to next suggestion
-pub fn navigateToNextSuggestion() void {
-    if (autocomplete_candidates.items.len == 0) return;
+pub fn navigateToNextSuggestion() bool {
+    if (!candidateLeaseIsCurrent()) {
+        hideSuggestions();
+        return false;
+    }
+    if (autocomplete_candidates.items.len == 0) return false;
     // Move to next suggestion
     const last_index: i32 = @intCast(autocomplete_candidates.items.len - 1);
     const new_index = if (autocomplete_ui_manager.selected_index >= last_index)
@@ -904,6 +947,7 @@ pub fn navigateToNextSuggestion() void {
 
     autocomplete_ui_manager.selectSuggestion(new_index);
     debug.debugPrint("Selected next suggestion (index {})\n", .{new_index});
+    return true;
 }
 
 /// Get selected suggestion index
@@ -923,6 +967,8 @@ pub fn getSuggestionCount() usize {
 
 /// Deinitialize components
 pub fn deinit() void {
+    suggestion_window.setSuggestionClickCallback(null);
+    invalidateCandidateLease();
     // Free resources
     clearSuggestions();
     suggestions.deinit();

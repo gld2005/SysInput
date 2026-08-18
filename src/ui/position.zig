@@ -69,7 +69,7 @@ fn getDpiScaling(hwnd: ?api.HWND) f32 {
 /// Get the position of the text caret or active window
 pub fn getCaretPosition() api.POINT {
     // Get current focused window for cache checking
-    const focus_hwnd = api.getFocus();
+    const focus_hwnd = api.getFocusedWindow();
 
     // Try the cache first
     if (g_position_cache.isValid(focus_hwnd)) {
@@ -159,6 +159,32 @@ pub fn getCaretPosition() api.POINT {
     // Cache this result too
     g_position_cache.update(pt, focus_hwnd);
     return applyPositionOffset(pt, focus_hwnd);
+}
+
+/// Returns a real target-control caret anchor without falling back to the
+/// mouse cursor or using the display cache.
+pub fn getCaretAnchor() ?api.POINT {
+    const focus = api.getFocusedWindow() orelse return null;
+    const thread_id = api.getWindowThreadProcessId(focus, null);
+    var info = std.mem.zeroes(api.GUITHREADINFO);
+    info.cbSize = @sizeOf(api.GUITHREADINFO);
+    if (thread_id != 0 and api.getGUIThreadInfo(thread_id, &info) != 0 and info.hwndCaret != null) {
+        var point = api.POINT{ .x = info.rcCaret.left, .y = info.rcCaret.bottom };
+        _ = api.clientToScreen(info.hwndCaret.?, &point);
+        return point;
+    }
+
+    const selection = api.sendMessage(focus, api.EM_GETSEL, 0, 0);
+    const selection_bits: u64 = @bitCast(selection);
+    const selection_end: u32 = @truncate((selection_bits >> 16) & 0xFFFF);
+    const character_position = api.sendMessage(focus, api.EM_POSFROMCHAR, selection_end, 0);
+    if (character_position == -1) return null;
+    var point = api.POINT{
+        .x = @intCast(character_position & 0xFFFF),
+        .y = @intCast((character_position >> 16) & 0xFFFF),
+    };
+    _ = api.clientToScreen(focus, &point);
+    return point;
 }
 
 /// Apply appropriate offset based on DPI and window type

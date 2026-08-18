@@ -35,18 +35,20 @@ The application runs in the background. Type in any text field and press **Tab**
 
 1. Start typing in any text field (at least 2 characters).
 2. Suggestions appear near your cursor.
-3. Press **Tab** or **Enter** to accept a suggestion.
-4. Use **Up/Down arrows** to navigate suggestions.
+3. Press **Tab** to accept the selected word or phrase chunk.
+4. Use **Alt+Up/Down** to navigate suggestions without changing text.
 
 ### Keyboard Shortcuts
 
 | Key         | Action              |
 | ----------- | ------------------- |
-| **Tab**     | Accept suggestion   |
-| **Enter**   | Accept suggestion   |
-| **↓ Arrow** | Next suggestion     |
-| **↑ Arrow** | Previous suggestion |
-| **Esc**     | Exit SysInput       |
+| **Tab**              | Accept current word or chunk |
+| **Ctrl+Right Arrow** | Accept one predicted word    |
+| **Alt+Down Arrow**   | Next suggestion              |
+| **Alt+Up Arrow**     | Previous suggestion          |
+| **Arrow keys**       | Normal application movement  |
+| **Enter**            | Normal application input     |
+| **Esc**              | Hide suggestions             |
 
 ## Architecture
 

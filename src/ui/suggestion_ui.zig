@@ -3,7 +3,6 @@ const sysinput = @import("root").sysinput;
 
 const api = sysinput.win32.api;
 const window = sysinput.ui.window;
-const text_inject = sysinput.win32.text_inject;
 const position = sysinput.ui.position;
 const debug = sysinput.core.debug;
 const config = sysinput.core.config;
@@ -24,8 +23,6 @@ pub const AutocompleteUI = struct {
     current_word: []const u8,
     /// Current best suggestion
     current_suggestion: ?[]const u8,
-    /// Callback for completing a suggestion
-    selection_callback: ?*const fn ([]const u8) void,
     /// Window handle for suggestion UI
     suggestion_window: ?api.HWND,
     /// Module instance
@@ -46,7 +43,6 @@ pub const AutocompleteUI = struct {
             .current_text = "",
             .current_word = "",
             .current_suggestion = null,
-            .selection_callback = null,
             .suggestion_window = null,
             .instance = instance,
             .window_class_atom = atom,
@@ -62,17 +58,12 @@ pub const AutocompleteUI = struct {
         window.g_ui_state.suggestions = suggestions;
         window.g_ui_state.selected_index = 0;
 
-        // If we have suggestions, mark as visible and try to apply the first one
+        // Display and navigation are intentionally read-only. Text is changed
+        // only by the manager's explicit acceptance path.
         if (suggestions.len > 0) {
             self.is_visible = true;
             self.current_suggestion = suggestions[0];
             debug.debugPrint("First suggestion: '{s}'\n", .{self.current_suggestion.?});
-
-            // Try multiple approaches for inline completion
-            if (!text_inject.tryDirectCompletion(self.current_word, self.current_suggestion.?)) {
-                // If direct completion fails, try using selection-based approach
-                _ = text_inject.trySelectionCompletion(self.current_word, self.current_suggestion.?);
-            }
 
             // Show UI suggestion list near cursor position
             try self.showSuggestionUI(x, y);
@@ -192,11 +183,6 @@ pub const AutocompleteUI = struct {
         }
     }
 
-    /// Set the callback for suggestion selection
-    pub fn setSelectionCallback(self: *AutocompleteUI, callback: *const fn ([]const u8) void) void {
-        self.selection_callback = callback;
-    }
-
     /// Select a suggestion by index
     pub fn selectSuggestion(self: *AutocompleteUI, index: i32) void {
         if (index >= 0 and index < self.suggestions.len) {
@@ -209,18 +195,6 @@ pub const AutocompleteUI = struct {
                 _ = api.InvalidateRect(self.suggestion_window.?, null, 1);
                 _ = api.UpdateWindow(self.suggestion_window.?);
             }
-
-            // Try to apply the new suggestion
-            if (!text_inject.tryDirectCompletion(self.current_word, self.current_suggestion.?)) {
-                _ = text_inject.trySelectionCompletion(self.current_word, self.current_suggestion.?);
-            }
-        }
-    }
-
-    /// Accept the current suggestion
-    pub fn acceptSuggestion(self: *AutocompleteUI) void {
-        if (self.is_visible and self.current_suggestion != null and self.selection_callback != null) {
-            self.selection_callback.?(self.current_suggestion.?);
         }
     }
 

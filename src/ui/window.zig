@@ -25,6 +25,13 @@ pub var g_ui_state = UiState{
     .font = null,
 };
 
+pub const SuggestionClickCallback = *const fn (usize) void;
+var g_click_callback: ?SuggestionClickCallback = null;
+
+pub fn setSuggestionClickCallback(callback: ?SuggestionClickCallback) void {
+    g_click_callback = callback;
+}
+
 /// Window procedure for suggestion window
 pub fn suggestionWindowProc(
     hwnd: api.HWND,
@@ -149,11 +156,10 @@ pub fn suggestionWindowProc(
                 // Redraw
                 _ = api.InvalidateRect(hwnd, null, 1);
 
-                // Send a message to parent about selection
-                const parent = api.GetParent(hwnd);
-                if (parent != null) {
-                    _ = api.PostMessageA(parent.?, api.WM_USER + 1, @intCast(index), 0);
-                }
+                // A click is an explicit acceptance action. The popup has no
+                // parent window, so dispatch through the registered UI-thread
+                // callback after updating the highlight.
+                if (g_click_callback) |callback| callback(@intCast(index));
             }
 
             return 0;

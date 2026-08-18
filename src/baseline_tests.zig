@@ -15,6 +15,7 @@ const stats = sysinput.suggestion.stats;
 const key_decoder = sysinput.input.key_decoder;
 const api = sysinput.win32.api;
 const candidate_model = sysinput.suggestion.candidate;
+const lease_model = sysinput.suggestion.lease;
 const prediction_worker = sysinput.suggestion.worker;
 const lifecycle = sysinput.win32.lifecycle;
 const keyboard = sysinput.input.keyboard;
@@ -325,11 +326,44 @@ fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
     defer first.deinit();
     const duplicate = try lifecycle.SingleInstance.acquireNamed("Local\\SysInput.BaselineTest.SingleInstance");
     try expect(duplicate == null);
+}
 
-    try expect(keyboard.suggestionKeyAction(api.VK_ESCAPE) == .hide);
-    try expect(keyboard.suggestionKeyAction(api.VK_RETURN) == .pass);
-    try expect(keyboard.suggestionKeyAction(api.VK_TAB) == .accept_chunk);
-    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT) == .accept_word);
+fn testSafeSuggestionKeys() !void {
+    const plain = key_decoder.ModifierState{};
+    const ctrl = key_decoder.ModifierState{ .ctrl = true, .ctrl_mask = 1 };
+    const alt = key_decoder.ModifierState{ .alt = true, .alt_mask = 1 };
+    const shift = key_decoder.ModifierState{ .shift = true, .shift_mask = 1 };
+
+    try expect(keyboard.suggestionKeyAction(api.VK_ESCAPE, plain) == .hide);
+    try expect(keyboard.suggestionKeyAction(api.VK_RETURN, plain) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_TAB, plain) == .accept_chunk);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, plain) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_UP, plain) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_DOWN, plain) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, ctrl) == .accept_word);
+    try expect(keyboard.suggestionKeyAction(api.VK_UP, alt) == .previous);
+    try expect(keyboard.suggestionKeyAction(api.VK_DOWN, alt) == .next);
+    try expect(keyboard.suggestionKeyAction(api.VK_TAB, ctrl) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, shift) == .pass);
+}
+
+fn testCandidateLease() !void {
+    var lease = lease_model.Lease{};
+    try expect(!lease.matches(1, 10, 20, 30, true, 40, 50));
+    lease.bind(7, 10, 20, 30, true, 40, 50);
+    try expect(lease.matches(7, 10, 20, 30, true, 40, 50));
+    try expect(!lease.matches(8, 10, 20, 30, true, 40, 50));
+    try expect(!lease.matches(7, 11, 20, 30, true, 40, 50));
+    try expect(!lease.matches(7, 10, 21, 30, true, 40, 50));
+    try expect(!lease.matches(7, 10, 20, 31, true, 40, 50));
+    try expect(!lease.matches(7, 10, 20, 30, false, 40, 50));
+    try expect(!lease.matches(7, 10, 20, 30, true, 41, 50));
+    try expect(!lease.matches(7, 10, 20, 30, true, 40, 51));
+    lease.invalidate();
+    try expect(!lease.matches(7, 10, 20, 30, true, 40, 50));
+
+    lease.bind(8, 10, 20, 30, false, 0, 0);
+    try expect(lease.matches(8, 10, 20, 30, false, 999, 999));
 }
 
 fn testEditDistance() !void {
@@ -744,6 +778,8 @@ pub fn main() !void {
     try testActiveLayoutTranslation();
     try testStructuredCandidates();
     try testProgressiveCandidateAcceptance();
+    try testSafeSuggestionKeys();
+    try testCandidateLease();
     try testPredictionWorker();
     try testEditDistance();
     try testStatistics();
@@ -756,5 +792,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 28/28 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 30/30 checks passed\n");
 }

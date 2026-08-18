@@ -1,5 +1,9 @@
 # Phase 9: Progressive candidate acceptance
 
+> **Current behavior:** Phase 9.1 supersedes the original plain-arrow mapping.
+> Plain arrows now remain application cursor keys, `Ctrl+Right Arrow` accepts
+> one word, and `Alt+Up/Down` changes the highlighted candidate.
+
 Phase 9 changes only how an existing candidate is accepted. It does not add a
 new prediction model or enter Phase 10 compatibility and release work.
 
