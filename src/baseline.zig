@@ -4,6 +4,7 @@ pub const sysinput = @import("exports.zig");
 
 const dictionary = sysinput.text.dictionary;
 const autocomplete = sysinput.text.autocomplete;
+const context_prediction = sysinput.text.context_prediction;
 
 const PROCESS_MEMORY_COUNTERS = extern struct {
     cb: u32,
@@ -80,6 +81,19 @@ pub fn main() !void {
         total_ns += elapsed;
     }
 
+    var context_model = try context_prediction.ContextModel.init(allocator);
+    defer context_model.deinit();
+    try context_model.processTextSnapshot(1, "please let ");
+    var context_total_ns: u64 = 0;
+    var context_max_ns: u64 = 0;
+    for (0..query_count) |_| {
+        timer.reset();
+        _ = context_model.predict();
+        const elapsed = timer.read();
+        context_total_ns += elapsed;
+        context_max_ns = @max(context_max_ns, elapsed);
+    }
+
     const stdout = std.io.getStdOut().writer();
     try stdout.print(
         \\SysInput prediction microbenchmark
@@ -90,6 +104,9 @@ pub fn main() !void {
         \\suggestion_avg_ms={d:.3}
         \\suggestion_min_ms={d:.3}
         \\suggestion_max_ms={d:.3}
+        \\context_entries={d}
+        \\context_query_avg_ms={d:.3}
+        \\context_query_max_ms={d:.3}
         \\working_set_mib={d:.3}
         \\
     , .{
@@ -100,6 +117,9 @@ pub fn main() !void {
         @as(f64, @floatFromInt(total_ns / query_count)) / std.time.ns_per_ms,
         @as(f64, @floatFromInt(min_ns)) / std.time.ns_per_ms,
         @as(f64, @floatFromInt(max_ns)) / std.time.ns_per_ms,
+        context_model.transitionCount(),
+        @as(f64, @floatFromInt(context_total_ns / query_count)) / std.time.ns_per_ms,
+        @as(f64, @floatFromInt(context_max_ns)) / std.time.ns_per_ms,
         if (workingSetBytes()) |bytes|
             @as(f64, @floatFromInt(bytes)) / (1024.0 * 1024.0)
         else

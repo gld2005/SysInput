@@ -15,6 +15,8 @@ const config = sysinput.core.config;
 const candidate_model = sysinput.suggestion.candidate;
 const prediction_worker = sysinput.suggestion.worker;
 const personal_profile = sysinput.text.personal_profile;
+const context_prediction = sysinput.text.context_prediction;
+const text_inject = sysinput.win32.text_inject;
 
 const CandidateTextStorage = struct {
     display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
@@ -32,6 +34,7 @@ pub var spell_checker: spellcheck.SpellChecker = undefined;
 
 /// Global autocompletion engine
 pub var autocomplete_engine: autocomplete.AutocompleteEngine = undefined;
+pub var context_model: context_prediction.ContextModel = undefined;
 
 /// List for storing word suggestions
 pub var suggestions: std.ArrayList([]const u8) = undefined;
@@ -49,7 +52,10 @@ var applied_word_len: usize = 0;
 var latest_applied_version: u64 = 0;
 var profile_store: personal_profile.ProfileStore = undefined;
 var profile_initialized = false;
+var context_profile_store: context_prediction.ContextProfileStore = undefined;
+var context_profile_initialized = false;
 var saved_profile_revision: u64 = 0;
+var saved_context_revision: u64 = 0;
 var last_profile_save_ms: i64 = 0;
 
 /// Global UI for autocompletion suggestions
@@ -76,6 +82,7 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
 
     // Initialize autocompletion engine
     autocomplete_engine = try autocomplete.AutocompleteEngine.init(allocator, &spell_checker.dictionary);
+    context_model = try context_prediction.ContextModel.init(allocator);
 
     profile_store = try personal_profile.ProfileStore.initDefault(allocator);
     profile_initialized = true;
@@ -83,7 +90,13 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
         // A damaged or unsupported profile must never prevent input startup.
         debug.debugPrint("Personal profile ignored: {}\n", .{err});
     };
+    context_profile_store = try context_prediction.ContextProfileStore.initDefault(allocator);
+    context_profile_initialized = true;
+    context_profile_store.load(&context_model) catch |err| {
+        debug.debugPrint("Context profile ignored: {}\n", .{err});
+    };
     saved_profile_revision = autocomplete_engine.revision;
+    saved_context_revision = context_model.revision;
     last_profile_save_ms = std.time.milliTimestamp();
 
     // Initialize UI
@@ -105,6 +118,7 @@ pub fn computePrediction(
 ) !void {
     const target_id: usize = if (request.target_window) |window| @intFromPtr(window) else 0;
     try autocomplete_engine.processTextSnapshot(target_id, request.textSlice());
+    try context_model.processTextSnapshot(target_id, request.textSlice());
     autocomplete_engine.setCurrentWord(request.wordSlice());
     defer autocomplete_engine.setCurrentWord("");
 
@@ -131,24 +145,65 @@ pub fn computePrediction(
         );
         if (!result.addCandidate(&structured)) break;
     }
+
+    if (request.word_len == 0 and result.candidate_count == 0) {
+        const context_predictions = context_model.predict();
+        for (context_predictions.slice()) |prediction| {
+            const text = prediction.textSlice();
+            var structured = try candidate_model.Candidate.init(
+                prediction.kind,
+                .learned_phrase,
+                text,
+                text,
+                0,
+                prediction.score,
+                prediction.confidence,
+            );
+            try structured.addChunk(
+                0,
+                text.len,
+                if (prediction.kind == .next_word) .word else .phrase,
+            );
+            if (!result.addCandidate(&structured)) break;
+        }
+    }
 }
 
 /// Runs on the worker for accepted-word learning, never in the keyboard hook.
-pub fn recordPredictionFeedback(kind: prediction_worker.FeedbackKind, word: []const u8) !void {
-    switch (kind) {
-        .shown => try autocomplete_engine.recordShown(word),
-        .accepted => try autocomplete_engine.completeWord(word),
+pub fn recordPredictionFeedback(
+    feedback_kind: prediction_worker.FeedbackKind,
+    candidate_kind: candidate_model.CandidateKind,
+    text: []const u8,
+) !void {
+    switch (candidate_kind) {
+        .word_completion => switch (feedback_kind) {
+            .shown => try autocomplete_engine.recordShown(text),
+            .accepted => try autocomplete_engine.completeWord(text),
+        },
+        .next_word, .phrase_completion => context_model.recordFeedback(
+            if (feedback_kind == .shown) .shown else .accepted,
+            text,
+        ),
+        .sentence_completion => {},
     }
 }
 
 /// Runs only on the prediction worker. Regular calls are cheap revision/time
 /// checks; shutdown forces the final atomic save.
 pub fn maintainPersonalProfile(force: bool) !void {
-    if (!profile_initialized or autocomplete_engine.revision == saved_profile_revision) return;
+    const personal_dirty = profile_initialized and autocomplete_engine.revision != saved_profile_revision;
+    const context_dirty = context_profile_initialized and context_model.revision != saved_context_revision;
+    if (!personal_dirty and !context_dirty) return;
     const now = std.time.milliTimestamp();
     if (!force and now - last_profile_save_ms < 60_000) return;
-    try profile_store.save(&autocomplete_engine);
-    saved_profile_revision = autocomplete_engine.revision;
+    if (personal_dirty) {
+        try profile_store.save(&autocomplete_engine);
+        saved_profile_revision = autocomplete_engine.revision;
+    }
+    if (context_dirty) {
+        try context_profile_store.save(&context_model);
+        saved_context_revision = context_model.revision;
+    }
     last_profile_save_ms = now;
 }
 
@@ -238,9 +293,11 @@ pub fn showSuggestions(current_text: []const u8, current_word: []const u8, x: i3
     }
 
     // Use config for minimum word length to show suggestions
-    if (autocomplete_candidates.items.len > 0 and
-        current_word.len >= config.BEHAVIOR.MIN_TRIGGER_LEN)
-    {
+    const can_show = autocomplete_candidates.items.len > 0 and
+        ((autocomplete_candidates.items[0].kind == .word_completion and
+            current_word.len >= config.BEHAVIOR.MIN_TRIGGER_LEN) or
+            (autocomplete_candidates.items[0].kind != .word_completion and current_word.len == 0));
+    if (can_show) {
         // Only show suggestions if auto-show is enabled
         if (config.BEHAVIOR.AUTO_SHOW_SUGGESTIONS) {
             // Set context
@@ -252,7 +309,7 @@ pub fn showSuggestions(current_text: []const u8, current_word: []const u8, x: i3
             // Per-word exposure is queued back to the prediction thread. This
             // keeps scoring state single-threaded and enables ignore penalties.
             for (autocomplete_candidates.items) |candidate| {
-                prediction_worker.submitShownWord(candidate.insert_text);
+                prediction_worker.submitShownCandidate(candidate.kind, candidate.insert_text);
             }
 
             // Update stats
@@ -480,8 +537,12 @@ pub fn handleSuggestionSelection(suggestion: []const u8) void {
         debug.debugPrint("No structured candidate for UI selection: '{s}'\n", .{suggestion});
         return;
     };
+    if (candidate.kind == .next_word or candidate.kind == .phrase_completion) {
+        acceptContextCandidate(candidate);
+        return;
+    }
     if (candidate.kind != .word_completion) {
-        debug.debugPrint("Candidate kind {s} is not accepted in this phase\n", .{@tagName(candidate.kind)});
+        debug.debugPrint("Unsupported candidate kind {s}\n", .{@tagName(candidate.kind)});
         return;
     }
 
@@ -509,8 +570,12 @@ pub fn acceptCurrentSuggestion() void {
     if (!autocomplete_ui_manager.is_visible) return;
 
     const candidate = getSelectedCandidate() orelse return;
+    if (candidate.kind == .next_word or candidate.kind == .phrase_completion) {
+        acceptContextCandidate(candidate);
+        return;
+    }
     if (candidate.kind != .word_completion) {
-        debug.debugPrint("Candidate kind {s} is not accepted in this phase\n", .{@tagName(candidate.kind)});
+        debug.debugPrint("Unsupported candidate kind {s}\n", .{@tagName(candidate.kind)});
         return;
     }
     const suggestion = candidate.insert_text;
@@ -645,6 +710,44 @@ pub fn acceptCurrentSuggestion() void {
     hideSuggestions();
 }
 
+fn acceptContextCandidate(candidate: *const candidate_model.Candidate) void {
+    const current_word = buffer_controller.getCurrentWord() catch return;
+    if (current_word.len != 0) {
+        debug.debugPrint("Context changed before candidate acceptance\n", .{});
+        hideSuggestions();
+        return;
+    }
+
+    const target = api.getFocus() orelse api.getForegroundWindow() orelse {
+        hideSuggestions();
+        return;
+    };
+    var payload: [config.TEXT.MAX_SUGGESTION_LEN + 1]u8 = undefined;
+    if (candidate.insert_text.len + 1 > payload.len) return;
+    @memcpy(payload[0..candidate.insert_text.len], candidate.insert_text);
+    payload[candidate.insert_text.len] = ' ';
+    const insertion_text = payload[0 .. candidate.insert_text.len + 1];
+
+    sysinput.suggestion.stats.recordInsertionAttempt(&stats_instance);
+    if (!text_inject.insertTextAsSelection(target, insertion_text)) {
+        debug.debugPrint("Context insertion failed for '{s}'\n", .{candidate.insert_text});
+        hideSuggestions();
+        return;
+    }
+
+    buffer_controller.recordInjectedText(insertion_text) catch {
+        buffer_controller.invalidatePhysicalInputState();
+    };
+    prediction_worker.submitAcceptedCandidate(candidate.kind, candidate.insert_text);
+    sysinput.suggestion.stats.recordInsertionSuccess(&stats_instance);
+    sysinput.suggestion.stats.recordSuggestionAccepted(&stats_instance);
+    hideSuggestions();
+
+    const updated_text = buffer_controller.getCurrentText();
+    const updated_word = buffer_controller.getCurrentWord() catch "";
+    _ = prediction_worker.submitPrediction(updated_text, updated_word);
+}
+
 /// Hide suggestions UI
 pub fn hideSuggestions() void {
     autocomplete_ui_manager.hideSuggestions();
@@ -725,9 +828,14 @@ pub fn deinit() void {
 
     spell_checker.deinit();
     autocomplete_engine.deinit();
+    context_model.deinit();
     if (profile_initialized) {
         profile_store.deinit();
         profile_initialized = false;
+    }
+    if (context_profile_initialized) {
+        context_profile_store.deinit();
+        context_profile_initialized = false;
     }
     autocomplete_ui_manager.deinit();
 }

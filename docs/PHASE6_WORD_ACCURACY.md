@@ -42,8 +42,9 @@ system drive.
 - The binary format has a magic value, version, bounded record count, payload
   length, and CRC32 checksum.
 - Invalid, truncated, oversized, or unsupported profiles are ignored safely.
-- Only normalized words and counters are persisted. Full input buffers,
-  phrases, sentences, application names, and window handles are never saved.
+- The Phase 6 `profile.bin` stores only normalized words and counters. Full
+  input buffers, application names, and window handles are never saved. Phase
+  7 adds a separate `context.bin` for bounded normalized 2–5 word contexts.
 
 ## Verification
 

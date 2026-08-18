@@ -320,6 +320,13 @@ pub fn recordPhysicalChar(char: u8) !void {
     try buffer_manager.processKeyPress(char, true);
 }
 
+/// Update only SysInput's shadow buffer after successful injected text. The
+/// target application has already received the insertion and must not be
+/// rewritten from the hook-side buffer.
+pub fn recordInjectedText(text: []const u8) !void {
+    try buffer_manager.insertString(text);
+}
+
 pub fn recordPhysicalBackspace() !void {
     try buffer_manager.processBackspace();
 }

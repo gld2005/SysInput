@@ -7,6 +7,7 @@ const config = sysinput.core.config;
 const dictionary = sysinput.text.dictionary;
 const autocomplete = sysinput.text.autocomplete;
 const personal_profile = sysinput.text.personal_profile;
+const context_prediction = sysinput.text.context_prediction;
 const edit_distance = sysinput.text.edit_distance;
 const insertion = sysinput.win32.insertion;
 const stats = sysinput.suggestion.stats;
@@ -45,10 +46,15 @@ fn testWorkerDeliver(result: *const prediction_worker.PredictionResult) void {
     @memcpy(worker_test_delivered_word[0..worker_test_delivered_word_len], word[0..worker_test_delivered_word_len]);
 }
 
-fn testWorkerLearn(kind: prediction_worker.FeedbackKind, word: []const u8) !void {
+fn testWorkerLearn(
+    kind: prediction_worker.FeedbackKind,
+    candidate_kind: candidate_model.CandidateKind,
+    word: []const u8,
+) !void {
     worker_test_mutex.lock();
     defer worker_test_mutex.unlock();
-    worker_test_learned = kind == .accepted and std.mem.eql(u8, word, "accepted");
+    worker_test_learned = kind == .accepted and candidate_kind == .word_completion and
+        std.mem.eql(u8, word, "accepted");
 }
 
 fn testWorkerMaintenance(force: bool) !void {
@@ -419,6 +425,85 @@ fn testPersonalVocabularyBound(allocator: std.mem.Allocator) !void {
     try expect(engine.personal_words.get("personalword10000") != null);
 }
 
+fn feedContextSequence(
+    model: *context_prediction.ContextModel,
+    target: usize,
+    sequence: []const u8,
+) !void {
+    var snapshot_storage: [256]u8 = undefined;
+    try expect(sequence.len <= snapshot_storage.len);
+    for (sequence, 0..) |character, index| {
+        snapshot_storage[index] = character;
+        try model.processTextSnapshot(target, snapshot_storage[0 .. index + 1]);
+    }
+}
+
+fn testSeededContextPhrase(allocator: std.mem.Allocator) !void {
+    var model = try context_prediction.ContextModel.init(allocator);
+    defer model.deinit();
+    try model.processTextSnapshot(101, "please let ");
+    const predictions = model.predict();
+    try expect(predictions.count > 0);
+    try expect(predictions.items[0].kind == .phrase_completion);
+    try expect(std.mem.startsWith(u8, predictions.items[0].textSlice(), "me know"));
+    try expect(predictions.items[0].confidence >= 850);
+    for (0..18) |_| model.recordFeedback(.shown, predictions.items[0].textSlice());
+    try expect(model.predict().count == 0);
+}
+
+fn testLearnedNextWordAndFeedback(allocator: std.mem.Allocator) !void {
+    var model = try context_prediction.ContextModel.init(allocator);
+    defer model.deinit();
+    try feedContextSequence(&model, 201, "alpha beta gamma ");
+    try model.processTextSnapshot(202, "alpha beta ");
+    const before = model.predict();
+    try expect(before.count == 1);
+    try expect(before.items[0].kind == .next_word);
+    try expectEqualStrings("gamma", before.items[0].textSlice());
+    const score_before = before.items[0].score;
+    model.recordFeedback(.accepted, "gamma");
+    const after = model.predict();
+    try expect(after.items[0].score > score_before);
+    try expect(model.transitionCount() <= context_prediction.MAX_CONTEXT_TRANSITIONS);
+}
+
+fn testLowConfidenceContextStaysHidden(allocator: std.mem.Allocator) !void {
+    var model = try context_prediction.ContextModel.init(allocator);
+    defer model.deinit();
+    try feedContextSequence(&model, 301, "alpha beta gamma ");
+    try feedContextSequence(&model, 302, "alpha beta gamma ");
+    try feedContextSequence(&model, 303, "alpha beta delta ");
+    try feedContextSequence(&model, 304, "alpha beta delta ");
+    try model.processTextSnapshot(305, "alpha beta ");
+    const predictions = model.predict();
+    try expect(predictions.count == 0);
+}
+
+fn testContextProfileRoundTrip(allocator: std.mem.Allocator) !void {
+    var source = try context_prediction.ContextModel.init(allocator);
+    defer source.deinit();
+    try feedContextSequence(&source, 401, "alpha beta gamma ");
+    try source.processTextSnapshot(402, "alpha beta ");
+    source.recordFeedback(.accepted, "gamma");
+    const bytes = try context_prediction.encodeProfile(allocator, &source);
+    defer allocator.free(bytes);
+
+    var restored = try context_prediction.ContextModel.init(allocator);
+    defer restored.deinit();
+    try context_prediction.decodeProfileInto(&restored, bytes);
+    try restored.processTextSnapshot(403, "alpha beta ");
+    const predictions = restored.predict();
+    try expect(predictions.count == 1);
+    try expectEqualStrings("gamma", predictions.items[0].textSlice());
+
+    const damaged = try allocator.dupe(u8, bytes);
+    defer allocator.free(damaged);
+    damaged[damaged.len - 1] ^= 0xff;
+    var rejected = try context_prediction.ContextModel.init(allocator);
+    defer rejected.deinit();
+    try expect(context_prediction.decodeProfileInto(&rejected, damaged) == error.InvalidContextProfile);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -437,6 +522,10 @@ pub fn main() !void {
         .{ .name = "snapshot learns once", .run = testSnapshotLearnsOnce },
         .{ .name = "profile round trip and corrupt fallback", .run = testProfileRoundTripAndCorruption },
         .{ .name = "personal vocabulary bound", .run = testPersonalVocabularyBound },
+        .{ .name = "seeded context phrase", .run = testSeededContextPhrase },
+        .{ .name = "learned next word and feedback", .run = testLearnedNextWordAndFeedback },
+        .{ .name = "low-confidence context suppression", .run = testLowConfidenceContextStaysHidden },
+        .{ .name = "context profile round trip", .run = testContextProfileRoundTrip },
         .{ .name = "lifecycle and startup contracts", .run = testLifecycleContracts },
     };
 
@@ -456,5 +545,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 17/17 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 21/21 checks passed\n");
 }
