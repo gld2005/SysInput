@@ -3,6 +3,8 @@ pub const core = struct {
     pub const config = @import("core/config.zig");
     pub const debug = @import("core/debug.zig");
     pub const buffer_controller = @import("core/buffer_controller.zig");
+    pub const data_paths = @import("core/data_paths.zig");
+    pub const runtime_settings = @import("core/runtime_settings.zig");
 };
 
 pub const input = struct {

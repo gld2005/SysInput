@@ -19,6 +19,12 @@ pub const ProfileStore = struct {
         const executable_dir = try std.fs.selfExeDirPathAlloc(allocator);
         defer allocator.free(executable_dir);
         const directory = try std.fs.path.join(allocator, &.{ executable_dir, "data" });
+        defer allocator.free(directory);
+        return initAt(allocator, directory);
+    }
+
+    pub fn initAt(allocator: std.mem.Allocator, directory_path: []const u8) !ProfileStore {
+        const directory = try allocator.dupe(u8, directory_path);
         errdefer allocator.free(directory);
         const path = try std.fs.path.join(allocator, &.{ directory, "profile.bin" });
         errdefer allocator.free(path);

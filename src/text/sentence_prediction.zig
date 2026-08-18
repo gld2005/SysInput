@@ -115,15 +115,19 @@ pub const SentenceModel = struct {
     }
 
     pub fn processTextSnapshot(self: *SentenceModel, target: usize, text: []const u8) !void {
+        try self.processTextSnapshotWithLearning(target, text, true);
+    }
+
+    pub fn processTextSnapshotWithLearning(self: *SentenceModel, target: usize, text: []const u8, learn: bool) !void {
         const bounded = text[0..@min(text.len, self.snapshot.len)];
         const appended = target != 0 and target == self.snapshot_target and
             bounded.len >= self.snapshot_len and
             std.mem.eql(u8, bounded[0..self.snapshot_len], self.snapshot[0..self.snapshot_len]);
 
         if (!appended) {
-            try self.rebuildCurrentSentence(bounded);
+            try self.rebuildCurrentSentence(bounded, learn);
         } else if (bounded.len > self.snapshot_len) {
-            try self.consumeAppended(bounded, self.snapshot_len);
+            try self.consumeAppended(bounded, self.snapshot_len, learn);
         }
 
         @memcpy(self.snapshot[0..bounded.len], bounded);
@@ -188,7 +192,7 @@ pub const SentenceModel = struct {
         return count;
     }
 
-    fn consumeAppended(self: *SentenceModel, text: []const u8, previous_len: usize) !void {
+    fn consumeAppended(self: *SentenceModel, text: []const u8, previous_len: usize, learn: bool) !void {
         var scan_start = previous_len;
         while (scan_start > 0 and isWordChar(text[scan_start - 1])) scan_start -= 1;
         var word_start: ?usize = null;
@@ -198,19 +202,19 @@ pub const SentenceModel = struct {
                 continue;
             }
             if (word_start) |start| {
-                if (index >= previous_len) try self.observeWord(text[start..index]);
+                if (index >= previous_len) try self.observeWord(text[start..index], learn);
                 word_start = null;
             }
             if (index < previous_len) continue;
             if (isSoftPunctuation(character)) {
-                try self.observePunctuation(character);
+                try self.observePunctuation(character, learn);
             } else if (isHardBoundary(character)) {
-                try self.finishSentence();
+                if (learn) try self.finishSentence() else self.resetCurrent();
             }
         }
     }
 
-    fn rebuildCurrentSentence(self: *SentenceModel, text: []const u8) !void {
+    fn rebuildCurrentSentence(self: *SentenceModel, text: []const u8, learn: bool) !void {
         self.resetCurrent();
         var word_start: ?usize = null;
         for (text, 0..) |character, index| {
@@ -219,7 +223,7 @@ pub const SentenceModel = struct {
                 continue;
             }
             if (word_start) |start| {
-                if (try self.intern(text[start..index])) |token_id| {
+                if (if (learn) try self.intern(text[start..index]) else self.findToken(text[start..index])) |token_id| {
                     try self.pushCurrentToken(token_id, true);
                 } else {
                     self.current_overflow = true;
@@ -228,7 +232,7 @@ pub const SentenceModel = struct {
             }
             if (isSoftPunctuation(character)) {
                 var punctuation = [_]u8{character};
-                if (try self.intern(&punctuation)) |token_id| {
+                if (if (learn) try self.intern(&punctuation) else self.findToken(&punctuation)) |token_id| {
                     try self.pushCurrentToken(token_id, false);
                 } else {
                     self.current_overflow = true;
@@ -241,17 +245,17 @@ pub const SentenceModel = struct {
         // sentence prefix until a delimiter arrives.
     }
 
-    fn observeWord(self: *SentenceModel, word: []const u8) !void {
-        const token_id = try self.intern(word) orelse {
+    fn observeWord(self: *SentenceModel, word: []const u8, learn: bool) !void {
+        const token_id = (if (learn) try self.intern(word) else self.findToken(word)) orelse {
             self.current_overflow = true;
             return;
         };
         try self.pushCurrentToken(token_id, true);
     }
 
-    fn observePunctuation(self: *SentenceModel, punctuation: u8) !void {
+    fn observePunctuation(self: *SentenceModel, punctuation: u8, learn: bool) !void {
         var text = [_]u8{punctuation};
-        const token_id = try self.intern(&text) orelse return;
+        const token_id = (if (learn) try self.intern(&text) else self.findToken(&text)) orelse return;
         try self.pushCurrentToken(token_id, false);
     }
 
@@ -357,6 +361,12 @@ pub const SentenceModel = struct {
         return token_id;
     }
 
+    fn findToken(self: *const SentenceModel, token: []const u8) ?u32 {
+        var normalized_storage: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+        const normalized = normalizeToken(token, &normalized_storage) orelse return null;
+        return self.token_ids.get(normalized);
+    }
+
     fn restoreRecord(self: *SentenceModel, source: StoredRecord) !void {
         if (self.records.items.len >= MAX_SENTENCE_RECORDS) return;
         var record = SentenceRecord{
@@ -424,6 +434,12 @@ pub const SentenceProfileStore = struct {
         const executable_dir = try std.fs.selfExeDirPathAlloc(allocator);
         defer allocator.free(executable_dir);
         const directory = try std.fs.path.join(allocator, &.{ executable_dir, "data" });
+        defer allocator.free(directory);
+        return initAt(allocator, directory);
+    }
+
+    pub fn initAt(allocator: std.mem.Allocator, directory_path: []const u8) !SentenceProfileStore {
+        const directory = try allocator.dupe(u8, directory_path);
         errdefer allocator.free(directory);
         const path = try std.fs.path.join(allocator, &.{ directory, "sentences.bin" });
         errdefer allocator.free(path);

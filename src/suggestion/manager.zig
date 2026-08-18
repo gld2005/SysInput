@@ -20,6 +20,7 @@ const context_prediction = sysinput.text.context_prediction;
 const sentence_prediction = sysinput.text.sentence_prediction;
 const text_inject = sysinput.win32.text_inject;
 const suggestion_window = sysinput.ui.window;
+const runtime_settings = sysinput.core.runtime_settings;
 
 const CandidateTextStorage = struct {
     display: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined,
@@ -65,6 +66,7 @@ var saved_profile_revision: u64 = 0;
 var saved_context_revision: u64 = 0;
 var saved_sentence_revision: u64 = 0;
 var last_profile_save_ms: i64 = 0;
+var settings_store: *runtime_settings.Store = undefined;
 
 /// Global UI for autocompletion suggestions
 pub var autocomplete_ui_manager: suggestion_ui.AutocompleteUI = undefined;
@@ -122,8 +124,14 @@ fn candidateLeaseIsCurrent() bool {
 }
 
 /// Initialize suggestion handling components
-pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
+pub fn init(
+    allocator: std.mem.Allocator,
+    module_instance: anytype,
+    profiles_directory: []const u8,
+    runtime_store: *runtime_settings.Store,
+) !void {
     gpa_allocator = allocator;
+    settings_store = runtime_store;
 
     // Initialize spellchecker
     spell_checker = try spellcheck.SpellChecker.init(allocator);
@@ -140,18 +148,18 @@ pub fn init(allocator: std.mem.Allocator, module_instance: anytype) !void {
     context_model = try context_prediction.ContextModel.init(allocator);
     sentence_model = sentence_prediction.SentenceModel.init(allocator);
 
-    profile_store = try personal_profile.ProfileStore.initDefault(allocator);
+    profile_store = try personal_profile.ProfileStore.initAt(allocator, profiles_directory);
     profile_initialized = true;
     profile_store.load(&autocomplete_engine) catch |err| {
         // A damaged or unsupported profile must never prevent input startup.
         debug.debugPrint("Personal profile ignored: {}\n", .{err});
     };
-    context_profile_store = try context_prediction.ContextProfileStore.initDefault(allocator);
+    context_profile_store = try context_prediction.ContextProfileStore.initAt(allocator, profiles_directory);
     context_profile_initialized = true;
     context_profile_store.load(&context_model) catch |err| {
         debug.debugPrint("Context profile ignored: {}\n", .{err});
     };
-    sentence_profile_store = try sentence_prediction.SentenceProfileStore.initDefault(allocator);
+    sentence_profile_store = try sentence_prediction.SentenceProfileStore.initAt(allocator, profiles_directory);
     sentence_profile_initialized = true;
     sentence_profile_store.load(&sentence_model) catch |err| {
         debug.debugPrint("Sentence profile ignored: {}\n", .{err});
@@ -178,10 +186,11 @@ pub fn computePrediction(
     request: *const prediction_worker.PredictionRequest,
     result: *prediction_worker.PredictionResult,
 ) !void {
+    const settings = settings_store.snapshot();
     const target_id: usize = if (request.target_window) |window| @intFromPtr(window) else 0;
-    try autocomplete_engine.processTextSnapshot(target_id, request.textSlice());
-    try context_model.processTextSnapshot(target_id, request.textSlice());
-    try sentence_model.processTextSnapshot(target_id, request.textSlice());
+    try autocomplete_engine.processTextSnapshotWithLearning(target_id, request.textSlice(), settings.personal_learning);
+    try context_model.processTextSnapshotWithLearning(target_id, request.textSlice(), settings.personal_learning);
+    try sentence_model.processTextSnapshotWithLearning(target_id, request.textSlice(), settings.personal_learning);
     autocomplete_engine.setCurrentWord(request.wordSlice());
     defer autocomplete_engine.setCurrentWord("");
 
@@ -190,7 +199,7 @@ pub fn computePrediction(
         for (generated.items) |item| gpa_allocator.free(item);
         generated.deinit();
     }
-    try autocomplete_engine.getSuggestions(&generated);
+    if (settings.word_completion) try autocomplete_engine.getSuggestions(&generated);
 
     for (generated.items) |text| {
         const info = autocomplete_engine.suggestionInfo(text);
@@ -209,7 +218,7 @@ pub fn computePrediction(
         if (!result.addCandidate(&structured)) break;
     }
 
-    if (request.word_len == 0 and result.candidate_count == 0) {
+    if (settings.sentence_prediction and request.word_len == 0 and result.candidate_count == 0) {
         const sentence_predictions = sentence_model.predict();
         for (sentence_predictions.slice()) |prediction| {
             const text = prediction.textSlice();
@@ -229,12 +238,20 @@ pub fn computePrediction(
         }
     }
 
-    if (request.word_len == 0 and result.candidate_count == 0) {
+    if ((settings.next_word_prediction or settings.phrase_completion) and request.word_len == 0 and result.candidate_count == 0) {
         const context_predictions = context_model.predict();
         for (context_predictions.slice()) |prediction| {
-            const text = prediction.textSlice();
+            var text = prediction.textSlice();
+            var kind = prediction.kind;
+            if (kind == .phrase_completion and !settings.phrase_completion) {
+                if (!settings.next_word_prediction) continue;
+                text = firstPredictedWord(text);
+                kind = .next_word;
+            } else if (kind == .next_word and !settings.next_word_prediction) {
+                continue;
+            }
             var structured = try candidate_model.Candidate.init(
-                prediction.kind,
+                kind,
                 .learned_phrase,
                 text,
                 text,
@@ -245,7 +262,7 @@ pub fn computePrediction(
             try structured.addChunk(
                 0,
                 text.len,
-                if (prediction.kind == .next_word) .word else .phrase,
+                if (kind == .next_word) .word else .phrase,
             );
             if (!result.addCandidate(&structured)) break;
         }
@@ -258,6 +275,7 @@ pub fn recordPredictionFeedback(
     candidate_kind: candidate_model.CandidateKind,
     text: []const u8,
 ) !void {
+    if (!settings_store.isEnabled(.personal_learning)) return;
     switch (candidate_kind) {
         .word_completion => switch (feedback_kind) {
             .shown => try autocomplete_engine.recordShown(text),
@@ -301,6 +319,10 @@ pub fn maintainPersonalProfile(force: bool) !void {
 /// Runs on the Windows message thread. It copies the fixed worker result into
 /// stable manager storage before passing borrowed display slices to the UI.
 pub fn applyPrediction(result: *const prediction_worker.PredictionResult) void {
+    if (!settings_store.isEnabled(.enabled)) {
+        hideSuggestions();
+        return;
+    }
     if (result.version <= latest_applied_version) return;
     latest_applied_version = result.version;
 
@@ -350,6 +372,17 @@ pub fn applyPrediction(result: *const prediction_worker.PredictionResult) void {
         hideSuggestions();
     };
     if (autocomplete_ui_manager.is_visible) bindCandidateLease(result.version, result.target_window);
+}
+
+pub fn runtimeSetting(feature: runtime_settings.Feature) bool {
+    return settings_store.isEnabled(feature);
+}
+
+fn firstPredictedWord(text: []const u8) []const u8 {
+    for (text, 0..) |character, index| {
+        if (std.ascii.isWhitespace(character)) return text[0..index];
+    }
+    return text;
 }
 
 /// Check if a word is spelled correctly

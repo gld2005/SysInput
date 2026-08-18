@@ -13,6 +13,7 @@ const CONFIGURED_VALUE = "StartupConfigured";
 
 const TRAY_CALLBACK = api.WM_APP + 2;
 const TRAY_ID = 1;
+const APP_ICON_ID = 101;
 const MENU_TOGGLE = 1001;
 const MENU_STARTUP = 1002;
 const MENU_EXIT = 1003;
@@ -20,12 +21,14 @@ const MENU_EXIT = 1003;
 pub const Options = struct {
     background: bool = false,
     startup_write: bool = true,
+    portable: bool = false,
 
     pub fn parse(args: []const []const u8) Options {
         var result = Options{};
         for (args[1..]) |arg| {
             if (std.mem.eql(u8, arg, "--background")) result.background = true;
             if (std.mem.eql(u8, arg, "--no-startup-write")) result.startup_write = false;
+            if (std.mem.eql(u8, arg, "--portable")) result.portable = true;
         }
         return result;
     }
@@ -54,6 +57,7 @@ pub const SingleInstance = struct {
 
 pub const Callbacks = struct {
     set_enabled: *const fn (bool) bool,
+    startup_changed: *const fn (bool) void,
 };
 
 var g_allocator: std.mem.Allocator = undefined;
@@ -63,20 +67,24 @@ var g_window_class: api.ATOM = 0;
 var g_icon_data: api.NOTIFYICONDATAA = undefined;
 var g_icon_added = false;
 var g_enabled = true;
+var g_portable = false;
 var g_callbacks: Callbacks = undefined;
 
 pub fn init(
     allocator: std.mem.Allocator,
     instance: api.HINSTANCE,
     options: Options,
+    initial_enabled: bool,
     callbacks: Callbacks,
 ) !void {
     if (g_window != null) return;
     g_allocator = allocator;
     g_instance = instance;
     g_callbacks = callbacks;
-    g_enabled = true;
+    g_enabled = initial_enabled;
+    g_portable = options.portable;
 
+    const application_icon = api.LoadIconA(instance, api.makeIntResource(APP_ICON_ID));
     const wc = api.WNDCLASSEX{
         .cbSize = @sizeOf(api.WNDCLASSEX),
         .style = 0,
@@ -84,12 +92,12 @@ pub fn init(
         .cbClsExtra = 0,
         .cbWndExtra = 0,
         .hInstance = instance,
-        .hIcon = null,
+        .hIcon = application_icon,
         .hCursor = null,
         .hbrBackground = @ptrCast(api.GetStockObject(api.WHITE_BRUSH).?),
         .lpszMenuName = null,
         .lpszClassName = WINDOW_CLASS,
-        .hIconSm = null,
+        .hIconSm = application_icon,
     };
     g_window_class = api.RegisterClassExA(&wc);
     if (g_window_class == 0) return error.WindowClassRegistrationFailed;
@@ -118,7 +126,8 @@ pub fn init(
     }
 
     try addTrayIcon();
-    if (options.startup_write) initializeStartupPreference() catch {};
+    if (options.startup_write) initializeStartupPreference(options.portable) catch {};
+    g_callbacks.startup_changed(isStartupEnabled());
     _ = options.background;
 }
 
@@ -137,7 +146,8 @@ pub fn deinit() void {
     }
 }
 
-pub fn startupCommand(allocator: std.mem.Allocator, executable_path: []const u8) ![:0]u8 {
+pub fn startupCommand(allocator: std.mem.Allocator, executable_path: []const u8, portable: bool) ![:0]u8 {
+    if (portable) return std.fmt.allocPrintZ(allocator, "\"{s}\" --background --portable", .{executable_path});
     return std.fmt.allocPrintZ(allocator, "\"{s}\" --background", .{executable_path});
 }
 
@@ -150,7 +160,7 @@ pub fn isStartupEnabled() bool {
     return api.RegQueryValueExA(key, RUN_VALUE, null, null, null, null) == api.ERROR_SUCCESS;
 }
 
-pub fn setStartupEnabled(allocator: std.mem.Allocator, enabled: bool) !void {
+pub fn setStartupEnabled(allocator: std.mem.Allocator, enabled: bool, portable: bool) !void {
     var key: api.HKEY = undefined;
     if (api.RegCreateKeyExA(
         api.HKEY_CURRENT_USER,
@@ -174,7 +184,7 @@ pub fn setStartupEnabled(allocator: std.mem.Allocator, enabled: bool) !void {
 
     const executable = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(executable);
-    const command = try startupCommand(allocator, executable);
+    const command = try startupCommand(allocator, executable, portable);
     defer allocator.free(command);
     if (api.RegSetValueExA(
         key,
@@ -187,12 +197,12 @@ pub fn setStartupEnabled(allocator: std.mem.Allocator, enabled: bool) !void {
     try markStartupConfigured();
 }
 
-fn initializeStartupPreference() !void {
+fn initializeStartupPreference(portable: bool) !void {
     if (!startupWasConfigured()) {
-        try setStartupEnabled(g_allocator, true);
+        try setStartupEnabled(g_allocator, true, portable);
     } else if (isStartupEnabled()) {
         // Refresh the absolute executable path after a portable move/update.
-        try setStartupEnabled(g_allocator, true);
+        try setStartupEnabled(g_allocator, true, portable);
     }
 }
 
@@ -239,7 +249,8 @@ fn addTrayIcon() !void {
     g_icon_data.uID = TRAY_ID;
     g_icon_data.uFlags = api.NIF_MESSAGE | api.NIF_ICON | api.NIF_TIP;
     g_icon_data.uCallbackMessage = TRAY_CALLBACK;
-    g_icon_data.hIcon = api.LoadIconA(null, api.makeIntResource(api.IDI_APPLICATION));
+    g_icon_data.hIcon = api.LoadIconA(g_instance, api.makeIntResource(APP_ICON_ID)) orelse
+        api.LoadIconA(null, api.makeIntResource(api.IDI_APPLICATION));
     setTooltip(if (g_enabled) "SysInput - Enabled" else "SysInput - Paused");
     if (api.Shell_NotifyIconA(api.NIM_ADD, &g_icon_data) == 0) return error.TrayIconCreationFailed;
     g_icon_added = true;
@@ -295,7 +306,11 @@ fn showTrayMenu(hwnd: api.HWND) void {
 
     switch (command) {
         MENU_TOGGLE => toggleEnabled(),
-        MENU_STARTUP => setStartupEnabled(g_allocator, !isStartupEnabled()) catch {},
+        MENU_STARTUP => {
+            const desired = !isStartupEnabled();
+            setStartupEnabled(g_allocator, desired, g_portable) catch return;
+            g_callbacks.startup_changed(desired);
+        },
         MENU_EXIT => api.PostQuitMessage(0),
         else => {},
     }

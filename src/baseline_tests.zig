@@ -19,6 +19,8 @@ const lease_model = sysinput.suggestion.lease;
 const prediction_worker = sysinput.suggestion.worker;
 const lifecycle = sysinput.win32.lifecycle;
 const keyboard = sysinput.input.keyboard;
+const runtime_settings = sysinput.core.runtime_settings;
+const data_paths = sysinput.core.data_paths;
 
 var worker_test_mutex = std.Thread.Mutex{};
 var worker_test_learned = false;
@@ -312,14 +314,18 @@ fn testPredictionWorker() !void {
 }
 
 fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
-    const background_args = [_][]const u8{ "SysInput.exe", "--background", "--no-startup-write" };
+    const background_args = [_][]const u8{ "SysInput.exe", "--background", "--no-startup-write", "--portable" };
     const options = lifecycle.Options.parse(&background_args);
     try expect(options.background);
     try expect(!options.startup_write);
+    try expect(options.portable);
 
-    const command = try lifecycle.startupCommand(allocator, "G:\\SysInput\\SysInput.exe");
+    const command = try lifecycle.startupCommand(allocator, "G:\\SysInput\\SysInput.exe", false);
     defer allocator.free(command);
     try expectEqualStrings("\"G:\\SysInput\\SysInput.exe\" --background", command);
+    const portable_command = try lifecycle.startupCommand(allocator, "G:\\SysInput\\SysInput.exe", true);
+    defer allocator.free(portable_command);
+    try expectEqualStrings("\"G:\\SysInput\\SysInput.exe\" --background --portable", portable_command);
 
     var first = (try lifecycle.SingleInstance.acquireNamed("Local\\SysInput.BaselineTest.SingleInstance")) orelse
         return error.BaselineTestFailed;
@@ -334,17 +340,133 @@ fn testSafeSuggestionKeys() !void {
     const alt = key_decoder.ModifierState{ .alt = true, .alt_mask = 1 };
     const shift = key_decoder.ModifierState{ .shift = true, .shift_mask = 1 };
 
-    try expect(keyboard.suggestionKeyAction(api.VK_ESCAPE, plain) == .hide);
-    try expect(keyboard.suggestionKeyAction(api.VK_RETURN, plain) == .pass);
-    try expect(keyboard.suggestionKeyAction(api.VK_TAB, plain) == .accept_chunk);
-    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, plain) == .pass);
-    try expect(keyboard.suggestionKeyAction(api.VK_UP, plain) == .pass);
-    try expect(keyboard.suggestionKeyAction(api.VK_DOWN, plain) == .pass);
-    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, ctrl) == .accept_word);
-    try expect(keyboard.suggestionKeyAction(api.VK_UP, alt) == .previous);
-    try expect(keyboard.suggestionKeyAction(api.VK_DOWN, alt) == .next);
-    try expect(keyboard.suggestionKeyAction(api.VK_TAB, ctrl) == .pass);
-    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, shift) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_ESCAPE, plain, true) == .hide);
+    try expect(keyboard.suggestionKeyAction(api.VK_RETURN, plain, true) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_TAB, plain, true) == .accept_chunk);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, plain, true) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_UP, plain, true) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_DOWN, plain, true) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, ctrl, true) == .accept_word);
+    try expect(keyboard.suggestionKeyAction(api.VK_UP, alt, true) == .previous);
+    try expect(keyboard.suggestionKeyAction(api.VK_DOWN, alt, true) == .next);
+    try expect(keyboard.suggestionKeyAction(api.VK_TAB, ctrl, true) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, shift, true) == .pass);
+    try expect(keyboard.suggestionKeyAction(api.VK_RIGHT, plain, false) == .accept_word);
+    try expect(keyboard.suggestionKeyAction(api.VK_UP, plain, false) == .previous);
+    try expect(keyboard.suggestionKeyAction(api.VK_DOWN, plain, false) == .next);
+}
+
+fn phase10TempRoot(allocator: std.mem.Allocator, suffix: []const u8) ![]u8 {
+    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(cwd);
+    return std.fmt.allocPrint(allocator, "{s}\\.zig-cache\\phase10-{s}-{d}", .{ cwd, suffix, std.time.nanoTimestamp() });
+}
+
+fn testRuntimeSettings(allocator: std.mem.Allocator) !void {
+    const defaults = runtime_settings.defaultSnapshot();
+    try expect(defaults.enabled and defaults.word_completion and defaults.safe_arrow_mode);
+    try expect(!defaults.abbreviation_expansion and !defaults.corpus_prediction);
+
+    const encoded = runtime_settings.encode(runtime_settings.mask(.enabled) | runtime_settings.mask(.phrase_completion));
+    const decoded = try runtime_settings.decode(&encoded);
+    try expect(decoded & runtime_settings.mask(.enabled) != 0);
+    var damaged = encoded;
+    damaged[damaged.len - 1] ^= 0xff;
+    try expect(runtime_settings.decode(&damaged) == error.InvalidSettings);
+
+    const root = try phase10TempRoot(allocator, "settings");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    const initialized = try runtime_settings.Store.initAt(allocator, root);
+    var store = initialized.store;
+    defer store.deinit();
+    try expect(initialized.status == .missing);
+    try store.setAndSave(.word_completion, false);
+    try expect(!store.isEnabled(.word_completion));
+
+    const reloaded_result = try runtime_settings.Store.initAt(allocator, root);
+    var reloaded = reloaded_result.store;
+    defer reloaded.deinit();
+    try expect(reloaded_result.status == .loaded);
+    try expect(!reloaded.isEnabled(.word_completion));
+    try reloaded.setAndSave(.word_completion, true);
+    try expect(reloaded.isEnabled(.word_completion));
+
+    var file = try std.fs.cwd().createFile(reloaded.path, .{ .truncate = true });
+    try file.writeAll("corrupt");
+    file.close();
+    const corrupt_result = try runtime_settings.Store.initAt(allocator, root);
+    var fallback = corrupt_result.store;
+    defer fallback.deinit();
+    try expect(corrupt_result.status == .corrupt);
+    try expect(fallback.snapshot().safe_arrow_mode);
+}
+
+fn testDataPathsAndMigration(allocator: std.mem.Allocator) !void {
+    const root = try phase10TempRoot(allocator, "paths");
+    defer allocator.free(root);
+    defer std.fs.cwd().deleteTree(root) catch {};
+    const executable_dir = try std.fs.path.join(allocator, &.{ root, "bin" });
+    defer allocator.free(executable_dir);
+    const legacy_dir = try std.fs.path.join(allocator, &.{ executable_dir, "data" });
+    defer allocator.free(legacy_dir);
+    try std.fs.cwd().makePath(legacy_dir);
+    const legacy_profile = try std.fs.path.join(allocator, &.{ legacy_dir, "profile.bin" });
+    defer allocator.free(legacy_profile);
+    var source = try std.fs.cwd().createFile(legacy_profile, .{ .truncate = true });
+    try source.writeAll("profile-data");
+    source.close();
+
+    var portable = try data_paths.DataPaths.initFromRoots(allocator, .portable, executable_dir, null);
+    defer portable.deinit();
+    const migrated = try std.fs.path.join(allocator, &.{ portable.profiles, "profile.bin" });
+    defer allocator.free(migrated);
+    const migrated_bytes = try std.fs.cwd().readFileAlloc(allocator, migrated, 64);
+    defer allocator.free(migrated_bytes);
+    try expectEqualStrings("profile-data", migrated_bytes);
+    try std.fs.cwd().access(legacy_profile, .{});
+    var changed_source = try std.fs.cwd().createFile(legacy_profile, .{ .truncate = true });
+    try changed_source.writeAll("new-legacy-data");
+    changed_source.close();
+    var second_portable = try data_paths.DataPaths.initFromRoots(allocator, .portable, executable_dir, null);
+    defer second_portable.deinit();
+    const preserved_bytes = try std.fs.cwd().readFileAlloc(allocator, migrated, 64);
+    defer allocator.free(preserved_bytes);
+    try expectEqualStrings("profile-data", preserved_bytes);
+
+    const local_app_data = try std.fs.path.join(allocator, &.{ root, "local" });
+    defer allocator.free(local_app_data);
+    var standard = try data_paths.DataPaths.initFromRoots(allocator, .standard, executable_dir, local_app_data);
+    defer standard.deinit();
+    const expected_root = try std.fs.path.join(allocator, &.{ local_app_data, "SysInput" });
+    defer allocator.free(expected_root);
+    try expectEqualStrings(expected_root, standard.root);
+}
+
+fn testLearningCanBeDisabled(allocator: std.mem.Allocator) !void {
+    var dict = try dictionary.Dictionary.init(allocator);
+    defer dict.deinit();
+    var engine = try autocomplete.AutocompleteEngine.init(allocator, &dict);
+    defer engine.deinit();
+    try engine.processTextSnapshotWithLearning(900, "hello", false);
+    try engine.processTextSnapshotWithLearning(900, "hello ", false);
+    try expect(engine.recordCount() == 0);
+    try expect(engine.revision == 0);
+
+    var context = try context_prediction.ContextModel.init(allocator);
+    defer context.deinit();
+    const transition_count = context.transitionCount();
+    try context.processTextSnapshotWithLearning(901, "alpha beta gamma ", false);
+    try expect(context.transitionCount() == transition_count);
+    try expect(context.revision == 0);
+
+    var sentence = sentence_prediction.SentenceModel.init(allocator);
+    defer sentence.deinit();
+    const sentence_count = sentence.recordCount();
+    try sentence.processTextSnapshotWithLearning(902, "alpha beta gamma", false);
+    try sentence.processTextSnapshotWithLearning(902, "alpha beta gamma.", false);
+    try expect(sentence.recordCount() == sentence_count);
+    try expect(sentence.revision == 0);
 }
 
 fn testCandidateLease() !void {
@@ -771,6 +893,9 @@ pub fn main() !void {
         .{ .name = "sentence profile round trip", .run = testSentenceProfileRoundTrip },
         .{ .name = "sentence record bound", .run = testSentenceRecordBound },
         .{ .name = "lifecycle and startup contracts", .run = testLifecycleContracts },
+        .{ .name = "runtime settings persistence and fallback", .run = testRuntimeSettings },
+        .{ .name = "data paths and non-destructive migration", .run = testDataPathsAndMigration },
+        .{ .name = "personal learning can be disabled", .run = testLearningCanBeDisabled },
     };
 
     try testWordCharacters();
@@ -792,5 +917,5 @@ pub fn main() !void {
     }
 
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("SysInput characterization: 30/30 checks passed\n");
+    try stdout.writeAll("SysInput characterization: 33/33 checks passed\n");
 }

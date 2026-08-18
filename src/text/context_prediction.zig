@@ -128,13 +128,17 @@ pub const ContextModel = struct {
     }
 
     pub fn processTextSnapshot(self: *ContextModel, target: usize, text: []const u8) !void {
+        try self.processTextSnapshotWithLearning(target, text, true);
+    }
+
+    pub fn processTextSnapshotWithLearning(self: *ContextModel, target: usize, text: []const u8, learn: bool) !void {
         const bounded = text[0..@min(text.len, self.snapshot.len)];
         const appended = target != 0 and target == self.snapshot_target and
             bounded.len >= self.snapshot_len and
             std.mem.eql(u8, bounded[0..self.snapshot_len], self.snapshot[0..self.snapshot_len]);
 
         if (!appended) {
-            try self.rebuildHistory(bounded);
+            try self.rebuildHistoryWithLearning(bounded, learn);
         } else if (bounded.len > self.snapshot_len) {
             var start = self.snapshot_len;
             while (start > 0 and isTokenChar(bounded[start - 1])) start -= 1;
@@ -144,7 +148,7 @@ pub const ContextModel = struct {
                     if (word_start == null) word_start = index;
                 } else {
                     if (word_start) |word_index| {
-                        if (index >= self.snapshot_len) try self.observeWord(bounded[word_index..index]);
+                        if (index >= self.snapshot_len) try self.observeWordWithLearning(bounded[word_index..index], learn);
                         word_start = null;
                     }
                     if (isHardBoundary(character)) self.history_count = 0;
@@ -297,12 +301,16 @@ pub const ContextModel = struct {
     }
 
     fn observeWord(self: *ContextModel, word: []const u8) !void {
-        const token_id = try self.intern(word) orelse {
+        try self.observeWordWithLearning(word, true);
+    }
+
+    fn observeWordWithLearning(self: *ContextModel, word: []const u8, learn: bool) !void {
+        const token_id = (if (learn) try self.intern(word) else self.findToken(word)) orelse {
             self.history_count = 0;
             return;
         };
         const max_len = @min(self.history_count, MAX_CONTEXT_WORDS);
-        if (max_len >= MIN_CONTEXT_WORDS) {
+        if (learn and max_len >= MIN_CONTEXT_WORDS) {
             var context_len = MIN_CONTEXT_WORDS;
             while (context_len <= max_len) : (context_len += 1) {
                 const history_start = self.history_count - context_len;
@@ -347,7 +355,7 @@ pub const ContextModel = struct {
         self.revision +%= 1;
     }
 
-    fn rebuildHistory(self: *ContextModel, text: []const u8) !void {
+    fn rebuildHistoryWithLearning(self: *ContextModel, text: []const u8, learn: bool) !void {
         self.history_count = 0;
         var start: ?usize = null;
         for (text, 0..) |character, index| {
@@ -355,7 +363,7 @@ pub const ContextModel = struct {
                 if (start == null) start = index;
             } else {
                 if (start) |word_start| {
-                    if (try self.intern(text[word_start..index])) |token_id| {
+                    if (if (learn) try self.intern(text[word_start..index]) else self.findToken(text[word_start..index])) |token_id| {
                         pushHistory(&self.history, &self.history_count, token_id);
                     }
                     start = null;
@@ -379,6 +387,12 @@ pub const ContextModel = struct {
         errdefer _ = self.tokens.pop();
         try self.token_ids.put(owned, token_id);
         return token_id;
+    }
+
+    fn findToken(self: *const ContextModel, word: []const u8) ?u32 {
+        var storage: [config.TEXT.MAX_SUGGESTION_LEN]u8 = undefined;
+        const normalized = normalizeToken(word, &storage) orelse return null;
+        return self.token_ids.get(normalized);
     }
 
     const Lookup = struct { key: ContextKey, bucket: *const Bucket };
@@ -441,6 +455,12 @@ pub const ContextProfileStore = struct {
         const executable_dir = try std.fs.selfExeDirPathAlloc(allocator);
         defer allocator.free(executable_dir);
         const directory = try std.fs.path.join(allocator, &.{ executable_dir, "data" });
+        defer allocator.free(directory);
+        return initAt(allocator, directory);
+    }
+
+    pub fn initAt(allocator: std.mem.Allocator, directory_path: []const u8) !ContextProfileStore {
+        const directory = try allocator.dupe(u8, directory_path);
         errdefer allocator.free(directory);
         const path = try std.fs.path.join(allocator, &.{ directory, "context.bin" });
         errdefer allocator.free(path);

@@ -119,6 +119,10 @@ pub const AutocompleteEngine = struct {
     /// snapshot. Re-running prediction for an unchanged buffer learns nothing.
     /// The snapshot is process-local and is never serialized.
     pub fn processTextSnapshot(self: *AutocompleteEngine, target: usize, text: []const u8) !void {
+        try self.processTextSnapshotWithLearning(target, text, true);
+    }
+
+    pub fn processTextSnapshotWithLearning(self: *AutocompleteEngine, target: usize, text: []const u8, learn: bool) !void {
         const bounded = text[0..@min(text.len, self.snapshot.len)];
         const is_append = target != 0 and target == self.snapshot_target and
             bounded.len >= self.snapshot_len and
@@ -132,7 +136,7 @@ pub const AutocompleteEngine = struct {
                 if (insertion.isWordChar(character)) {
                     if (word_start == null) word_start = index;
                 } else if (word_start) |word_index| {
-                    if (index >= self.snapshot_len) try self.recordTyped(bounded[word_index..index]);
+                    if (learn and index >= self.snapshot_len) try self.recordTyped(bounded[word_index..index]);
                     word_start = null;
                 }
             }

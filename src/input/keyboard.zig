@@ -24,11 +24,15 @@ pub const SuggestionKeyAction = enum {
 pub fn suggestionKeyAction(
     virtual_key: api.DWORD,
     modifiers: key_decoder.ModifierState,
+    safe_arrow_mode: bool,
 ) SuggestionKeyAction {
     if (!modifiers.shift and !modifiers.ctrl and !modifiers.alt) {
         return switch (virtual_key) {
             win32.VK_TAB => .accept_chunk,
             win32.VK_ESCAPE => .hide,
+            win32.VK_RIGHT => if (safe_arrow_mode) .pass else .accept_word,
+            win32.VK_UP => if (safe_arrow_mode) .pass else .previous,
+            win32.VK_DOWN => if (safe_arrow_mode) .pass else .next,
             else => .pass,
         };
     }
@@ -68,7 +72,7 @@ fn isKeyUp(message: win32.WPARAM) bool {
 fn processSuggestionNavigation(kbd: *const win32.KBDLLHOOKSTRUCT) bool {
     debug.debugPrint("Suggestion navigation key: 0x{X}\n", .{kbd.vkCode});
 
-    return switch (suggestionKeyAction(kbd.vkCode, decoder.modifiers)) {
+    return switch (suggestionKeyAction(kbd.vkCode, decoder.modifiers, manager.runtimeSetting(.safe_arrow_mode))) {
         .previous => manager.navigateToPreviousSuggestion(),
         .next => manager.navigateToNextSuggestion(),
         .accept_chunk => manager.acceptCurrentSuggestion(.chunk),
@@ -190,7 +194,7 @@ fn keyboardHookProc(nCode: c_int, wParam: win32.WPARAM, lParam: win32.LPARAM) ca
     if (!down) return win32.CallNextHookEx(null, nCode, wParam, lParam);
 
     if (manager.isSuggestionUIVisible()) {
-        switch (suggestionKeyAction(kbd.vkCode, decoder.modifiers)) {
+        switch (suggestionKeyAction(kbd.vkCode, decoder.modifiers, manager.runtimeSetting(.safe_arrow_mode))) {
             .previous, .next, .accept_chunk, .accept_word => {
                 if (processSuggestionNavigation(kbd)) return 1;
                 return win32.CallNextHookEx(null, nCode, wParam, lParam);

@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
 
     // Link with Windows user32 library (needed for keyboard hooks and window functions)
     if (target.result.os.tag == .windows) {
+        exe.root_module.addWin32ResourceFile(.{ .file = b.path("resources/sysinput.rc") });
         exe.subsystem = .Windows;
         exe.linkSystemLibrary("user32");
         exe.linkSystemLibrary("gdi32"); // Also link GDI32 for UI functions
