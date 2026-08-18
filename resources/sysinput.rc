@@ -17,11 +17,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "SysInput\0"
             VALUE "FileDescription", "SysInput English input assistant\0"
-            VALUE "FileVersion", "0.2.0 beta\0"
+            VALUE "FileVersion", "0.2.0-rc1\0"
             VALUE "InternalName", "SysInput\0"
             VALUE "OriginalFilename", "SysInput.exe\0"
             VALUE "ProductName", "SysInput\0"
-            VALUE "ProductVersion", "0.2.0 beta\0"
+            VALUE "ProductVersion", "0.2.0-rc1\0"
         END
     END
     BLOCK "VarFileInfo"

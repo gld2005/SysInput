@@ -118,6 +118,10 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     const options = lifecycle.Options.parse(args);
+    if (options.shutdown) {
+        if (!lifecycle.requestExistingExit(5000)) return error.ShutdownRequestFailed;
+        return;
+    }
     portable_mode = options.portable;
 
     var single_instance = (try lifecycle.SingleInstance.acquire()) orelse return;

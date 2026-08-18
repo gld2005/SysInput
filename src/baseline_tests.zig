@@ -408,9 +408,12 @@ fn testLifecycleContracts(allocator: std.mem.Allocator) !void {
     try expect(options.background);
     try expect(!options.startup_write);
     try expect(options.portable);
+    try expect(!options.shutdown);
     try expect(!lifecycle.shouldRefreshStartup(options, true));
     try expect(!lifecycle.shouldRefreshStartup(.{}, false));
     try expect(lifecycle.shouldRefreshStartup(.{}, true));
+    const shutdown_args = [_][]const u8{ "SysInput.exe", "--shutdown" };
+    try expect(lifecycle.Options.parse(&shutdown_args).shutdown);
 
     const command = try lifecycle.startupCommand(allocator, "G:\\SysInput\\SysInput.exe", false);
     defer allocator.free(command);

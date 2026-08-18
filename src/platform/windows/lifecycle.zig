@@ -29,6 +29,7 @@ pub const Options = struct {
     background: bool = false,
     startup_write: bool = true,
     portable: bool = false,
+    shutdown: bool = false,
 
     pub fn parse(args: []const []const u8) Options {
         var result = Options{};
@@ -36,10 +37,23 @@ pub const Options = struct {
             if (std.mem.eql(u8, arg, "--background")) result.background = true;
             if (std.mem.eql(u8, arg, "--no-startup-write")) result.startup_write = false;
             if (std.mem.eql(u8, arg, "--portable")) result.portable = true;
+            if (std.mem.eql(u8, arg, "--shutdown")) result.shutdown = true;
         }
         return result;
     }
 };
+
+pub fn requestExistingExit(timeout_ms: u32) bool {
+    const existing = api.FindWindowExA(null, null, WINDOW_CLASS, WINDOW_TITLE) orelse return true;
+    if (api.PostMessageA(existing, api.WM_CLOSE, 0, 0) == 0) return false;
+
+    var waited: u32 = 0;
+    while (waited < timeout_ms) : (waited += 50) {
+        if (api.FindWindowExA(null, null, WINDOW_CLASS, WINDOW_TITLE) == null) return true;
+        api.Sleep(50);
+    }
+    return api.FindWindowExA(null, null, WINDOW_CLASS, WINDOW_TITLE) == null;
+}
 
 pub const SingleInstance = struct {
     handle: api.HANDLE,

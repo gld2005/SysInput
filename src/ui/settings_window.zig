@@ -209,7 +209,7 @@ fn createControls(parent: api.HWND) !void {
     data_text[length] = 0;
     _ = try createControl("STATIC", &data_text, 0, 160, 136, 410, 60, parent, 0, .data);
 
-    _ = try createControl("STATIC", "SysInput v0.2 beta", 0, 160, 64, 400, 28, parent, 0, .about);
+    _ = try createControl("STATIC", "SysInput v0.2.0 RC1", 0, 160, 64, 400, 28, parent, 0, .about);
     _ = try createControl("STATIC", "Lightweight English input assistance for Windows. No cloud sync, telemetry, grammar correction, or online model.", 0, 160, 108, 400, 72, parent, 0, .about);
     _ = try createControl("STATIC", "Feedback is planned and currently unavailable.", 0, 160, 204, 400, 28, parent, 0, .about);
 

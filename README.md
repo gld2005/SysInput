@@ -1,6 +1,6 @@
 # SysInput
 
-**SysInput** is a lightweight Windows utility written in [Zig](https://ziglang.org/download/). It provides system-wide autocomplete and spell checking across all applications by capturing keystrokes and displaying suggestions near your cursor.
+**SysInput** is a lightweight Windows utility written in [Zig](https://ziglang.org/download/). It provides English autocomplete, next-word prediction, phrase completion, abbreviations, and local personalization across Windows applications.
 
 ## Demo
 
@@ -11,7 +11,7 @@
 - **System-wide suggestions:** Works in any standard text field.
 - **Intelligent autocomplete:** Learns from your typing.
 - **Low resource usage:** Efficiently built in Zig ⚡
-- **Adaptive learning:** Optimizes insertion methods per application
+- **Adaptive learning:** Learns local word, phrase, and sentence preferences without cloud upload
 
 ## Installation
 
@@ -28,6 +28,16 @@ cd SysInput
 zig build
 zig build run
 ```
+
+### Windows installer
+
+Release builds use Inno Setup 6 and install per-user without administrator privileges:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build_release.ps1
+```
+
+The RC installer and SHA-256 checksum are written to `dist`. Standard Inno Setup options such as `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` are supported. User settings and learned data are preserved by default when uninstalling; automated removals may explicitly add `/DELETEUSERDATA` to remove SysInput-owned local data.
 
 The application runs in the background. Type in any text field and press **Tab** to see suggestions.
 
